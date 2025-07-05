@@ -1,5 +1,5 @@
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from django.conf import settings
 from django.core.files import storage
@@ -25,7 +25,7 @@ class DummyStorage(storage.Storage):
         pass
 
     def get_modified_time(self, name):
-        return datetime(1970, 1, 1, tzinfo=UTC)
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 class PathNotImplementedStorage(storage.Storage):
