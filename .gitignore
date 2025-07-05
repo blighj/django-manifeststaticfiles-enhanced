@@ -1,0 +1,5 @@
+django_manifeststaticfiles_enhanced.egg-info/
+
+MANIFEST.in
+*~
+*.pyc
