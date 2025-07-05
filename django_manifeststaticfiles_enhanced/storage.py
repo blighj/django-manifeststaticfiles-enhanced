@@ -352,6 +352,38 @@ class EnhancedManifestStaticFilesStorage(
         *args,
         **kwargs,
     ):
+        # Handle options from both direct parameters and Django's OPTIONS dict
+        max_post_process_passes = (
+            max_post_process_passes
+            if max_post_process_passes is not None
+            else kwargs.pop("max_post_process_passes", None)
+        )
+        support_js_module_import_aggregation = (
+            support_js_module_import_aggregation
+            if support_js_module_import_aggregation is not None
+            else kwargs.pop("support_js_module_import_aggregation", None)
+        )
+        manifest_name = (
+            manifest_name
+            if manifest_name is not None
+            else kwargs.pop("manifest_name", None)
+        )
+        manifest_strict = (
+            manifest_strict
+            if manifest_strict is not None
+            else kwargs.pop("manifest_strict", None)
+        )
+        keep_intermediate_files = (
+            keep_intermediate_files
+            if keep_intermediate_files is not None
+            else kwargs.pop("keep_intermediate_files", None)
+        )
+        keep_original_files = (
+            keep_original_files
+            if keep_original_files is not None
+            else kwargs.pop("keep_original_files", None)
+        )
+
         # Set configurable attributes as instance attributes if provided
         if max_post_process_passes is not None:
             self.max_post_process_passes = max_post_process_passes
@@ -367,13 +399,5 @@ class EnhancedManifestStaticFilesStorage(
             self.keep_intermediate_files = keep_intermediate_files
         if keep_original_files is not None:
             self.keep_original_files = keep_original_files
-
-        # Remove our custom options from kwargs before passing to parent
-        kwargs.pop("max_post_process_passes", None)
-        kwargs.pop("support_js_module_import_aggregation", None)
-        kwargs.pop("manifest_name", None)
-        kwargs.pop("manifest_strict", None)
-        kwargs.pop("keep_intermediate_files", None)
-        kwargs.pop("keep_original_files", None)
 
         super().__init__(location, base_url, *args, **kwargs)
