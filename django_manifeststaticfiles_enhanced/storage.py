@@ -352,37 +352,39 @@ class EnhancedManifestStaticFilesStorage(
         *args,
         **kwargs,
     ):
-        # Handle options from both direct parameters and Django's OPTIONS dict
-        max_post_process_passes = (
-            max_post_process_passes
-            if max_post_process_passes is not None
-            else kwargs.pop("max_post_process_passes", None)
-        )
-        support_js_module_import_aggregation = (
-            support_js_module_import_aggregation
-            if support_js_module_import_aggregation is not None
-            else kwargs.pop("support_js_module_import_aggregation", None)
-        )
-        manifest_name = (
-            manifest_name
-            if manifest_name is not None
-            else kwargs.pop("manifest_name", None)
-        )
-        manifest_strict = (
-            manifest_strict
-            if manifest_strict is not None
-            else kwargs.pop("manifest_strict", None)
-        )
-        keep_intermediate_files = (
-            keep_intermediate_files
-            if keep_intermediate_files is not None
-            else kwargs.pop("keep_intermediate_files", None)
-        )
-        keep_original_files = (
-            keep_original_files
-            if keep_original_files is not None
-            else kwargs.pop("keep_original_files", None)
-        )
+        # Handle options from Django's OPTIONS dict in kwargs
+        # Use kwargs values if direct parameters are None
+        if max_post_process_passes is None:
+            max_post_process_passes = kwargs.pop("max_post_process_passes", None)
+        else:
+            kwargs.pop("max_post_process_passes", None)
+
+        if support_js_module_import_aggregation is None:
+            support_js_module_import_aggregation = kwargs.pop(
+                "support_js_module_import_aggregation", None
+            )
+        else:
+            kwargs.pop("support_js_module_import_aggregation", None)
+
+        if manifest_name is None:
+            manifest_name = kwargs.pop("manifest_name", None)
+        else:
+            kwargs.pop("manifest_name", None)
+
+        if manifest_strict is None:
+            manifest_strict = kwargs.pop("manifest_strict", None)
+        else:
+            kwargs.pop("manifest_strict", None)
+
+        if keep_intermediate_files is None:
+            keep_intermediate_files = kwargs.pop("keep_intermediate_files", None)
+        else:
+            kwargs.pop("keep_intermediate_files", None)
+
+        if keep_original_files is None:
+            keep_original_files = kwargs.pop("keep_original_files", None)
+        else:
+            kwargs.pop("keep_original_files", None)
 
         # Set configurable attributes as instance attributes if provided
         if max_post_process_passes is not None:
