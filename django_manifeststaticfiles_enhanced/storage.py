@@ -368,4 +368,12 @@ class EnhancedManifestStaticFilesStorage(
         if keep_original_files is not None:
             self.keep_original_files = keep_original_files
 
+        # Remove our custom options from kwargs before passing to parent
+        kwargs.pop("max_post_process_passes", None)
+        kwargs.pop("support_js_module_import_aggregation", None)
+        kwargs.pop("manifest_name", None)
+        kwargs.pop("manifest_strict", None)
+        kwargs.pop("keep_intermediate_files", None)
+        kwargs.pop("keep_original_files", None)
+
         super().__init__(location, base_url, *args, **kwargs)
