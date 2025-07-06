@@ -10,10 +10,10 @@ Enhanced ManifestStaticFilesStorage for Django.
 
 This package includes several improvements to Django's `ManifestStaticFilesStorage`:
 
-- **ticket_27929**: `keep_original_files` option to control whether original files are deleted after hashing
-- **ticket_21080**: CSS lexer for better URL parsing in CSS files
-- **ticket_34322**: JsLex for ES module support in JavaScript files
-- **ticket_28200**: Optimized storage to avoid unnecessary file operations for unchanged files
+- **[ticket_27929](https://code.djangoproject.com/ticket/27929)**: `keep_original_files` option to control whether original files are deleted after hashing
+- **[ticket_21080](https://code.djangoproject.com/ticket/21080)**: CSS lexer for better URL parsing in CSS files
+- **[ticket_34322](https://code.djangoproject.com/ticket/34322)**: JsLex for ES module support in JavaScript files
+- **[ticket_28200](https://code.djangoproject.com/ticket/28200)**: Optimized storage to avoid unnecessary file operations for unchanged files
 
 ## Compatibility
 
@@ -43,7 +43,7 @@ STORAGES = {
 
 ### Configuration Options
 
-#### keep_original_files (ticket_27929)
+#### keep_original_files ([ticket_27929](https://code.djangoproject.com/ticket/27929))
 
 Control whether original files are kept after hashing:
 
@@ -69,7 +69,7 @@ STORAGES = {
 }
 ```
 
-#### JavaScript Module Support (ticket_34322)
+#### JavaScript Module Support ([ticket_34322](https://code.djangoproject.com/ticket/34322))
 
 Disable ES module import/export processing:
 
@@ -105,7 +105,7 @@ Also available:
 
 ## Feature Details
 
-### CSS Processing Improvements (ticket_21080)
+### CSS Processing Improvements ([ticket_21080](https://code.djangoproject.com/ticket/21080))
 
 CSS URL processing uses a proper lexer instead of regex, providing:
 
@@ -113,14 +113,14 @@ CSS URL processing uses a proper lexer instead of regex, providing:
 - More reliable URL extraction
 - Wider @import support
 
-### File Operation Optimization (ticket_28200)
+### File Operation Optimization ([ticket_28200](https://code.djangoproject.com/ticket/28200))
 
 Reduces unnecessary file operations during `collectstatic`:
 
 - Avoids recreating files that haven't changed
 - Checks file existence before deletion
 
-### JavaScript Module Support (ticket_34322)
+### JavaScript Module Support ([ticket_34322](https://code.djangoproject.com/ticket/34322))
 
 Enabled by default:
 
@@ -140,7 +140,7 @@ import { Component } from './component.abc123.js';
 export { utils } from './utils.def456.js';
 ```
 
-### Option to not move the origianl asset to your static folder (ticket_27929)
+### Option to not move the origianl asset to your static folder ([ticket_27929](https://code.djangoproject.com/ticket/27929))
 
 Control file cleanup behavior:
 
@@ -189,9 +189,9 @@ This project is licensed under the BSD 3-Clause License - the same license as Dj
 
 ### 0.1.0 (Initial Release)
 
-- Includes `keep_original_files` option (ticket_27929)
-- Includes CSS lexer improvements (ticket_21080)
-- Includes file operation optimizations (ticket_28200)
-- Includes JavaScript module support (ticket_34322)
+- Includes `keep_original_files` option ([ticket_27929](https://code.djangoproject.com/ticket/27929))
+- Includes CSS lexer improvements ([ticket_21080](https://code.djangoproject.com/ticket/21080))
+- Includes file operation optimizations ([ticket_28200](https://code.djangoproject.com/ticket/28200))
+- Includes JavaScript module support ([ticket_34322](https://code.djangoproject.com/ticket/34322))
 - Added comprehensive test suite
 - Support for Django 4.2+
