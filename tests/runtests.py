@@ -14,12 +14,7 @@ from django.test.utils import get_runner
 
 def setup_test_environment():
     """Setup Django test environment"""
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "tests.staticfiles_tests.settings")
-
-    # Add the tests directory to sys.path so imports work without 'tests.' prefix
-    tests_path = os.path.join(os.path.dirname(__file__), "tests")
-    if tests_path not in sys.path:
-        sys.path.insert(0, tests_path)
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "staticfiles_tests.settings")
 
     django.setup()
 
@@ -31,13 +26,10 @@ def run_tests(test_path=None):
     test_runner = TestRunner(verbosity=2, interactive=True)
 
     if test_path:
-        # Convert path format to Django test format
-        if not test_path.startswith("tests."):
-            test_path = f"tests.staticfiles_tests.{test_path}"
         test_labels = [test_path]
     else:
         # Run all tests if no specific path provided
-        test_labels = ["tests.staticfiles_tests"]
+        test_labels = ["staticfiles_tests"]
 
     failures = test_runner.run_tests(test_labels)
     if failures:

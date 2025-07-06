@@ -161,10 +161,10 @@ keep_original_files = False
 pip install -e .[dev]
 
 # Run tests
-python runtests.py
+python tests/runtests.py
 
 # Or run specific test modules
-python runtests.py tests.staticfiles_tests.test_storage
+python tests/runtests.py staticfiles_tests.test_storage
 ```
 
 ## Migration from Django's ManifestStaticFilesStorage
