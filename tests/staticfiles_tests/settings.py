@@ -25,9 +25,6 @@ DATABASES = {
 STATIC_URL = "/static/"
 STATIC_ROOT = tempfile.mkdtemp()
 
-STATICFILES_STORAGE = (
-    "django_manifeststaticfiles_enhanced.storage.EnhancedManifestStaticFilesStorage"
-)
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",

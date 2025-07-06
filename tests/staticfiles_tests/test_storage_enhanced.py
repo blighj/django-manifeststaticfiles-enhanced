@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+from django.conf import STATICFILES_STORAGE_ALIAS, settings
 from django.core.files.base import ContentFile
 from django.test import TestCase, override_settings
 
@@ -41,10 +42,15 @@ class MockStorage:
 @override_settings(
     STATIC_URL="/static/",
     STATIC_ROOT=tempfile.mkdtemp(),
-    STATICFILES_STORAGE=(
-        "django_manifeststaticfiles_enhanced.storage."
-        "EnhancedManifestStaticFilesStorage"
-    ),
+    STORAGES={
+        **settings.STORAGES,
+        STATICFILES_STORAGE_ALIAS: {
+            "BACKEND": (
+                "django_manifeststaticfiles_enhanced.storage."
+                "EnhancedManifestStaticFilesStorage"
+            ),
+        },
+    },
 )
 class EnhancedManifestStaticFilesStorageTest(TestCase):
     """Test the enhanced storage functionality"""

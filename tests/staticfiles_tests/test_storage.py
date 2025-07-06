@@ -8,6 +8,7 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
+import django
 from django.conf import STATICFILES_STORAGE_ALIAS, settings
 from django.contrib.staticfiles import finders, storage
 from django.contrib.staticfiles.management.commands.collectstatic import (
@@ -198,6 +199,10 @@ class TestHashedFiles:
             self.assertIn(b"https://", relfile.read())
         self.assertPostCondition()
 
+    @unittest.skipIf(
+        django.VERSION < (5, 2),
+        "Import loop detection functionality only available in Django 5.2+",
+    )
     @override_settings(
         STATICFILES_DIRS=[os.path.join(TEST_ROOT, "project", "loop")],
         STATICFILES_FINDERS=["django.contrib.staticfiles.finders.FileSystemFinder"],

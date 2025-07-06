@@ -3,7 +3,8 @@ import posixpath
 import re
 from urllib.parse import unquote, urldefrag
 
-from django.conf import settings
+import django
+from django.conf import STATICFILES_STORAGE_ALIAS, settings
 from django.contrib.staticfiles.storage import (
     HashedFilesMixin,
     ManifestFilesMixin,
@@ -352,39 +353,11 @@ class EnhancedManifestStaticFilesStorage(
         *args,
         **kwargs,
     ):
-        # Handle options from Django's OPTIONS dict in kwargs
-        # Use kwargs values if direct parameters are None
-        if max_post_process_passes is None:
-            max_post_process_passes = kwargs.pop("max_post_process_passes", None)
-        else:
-            kwargs.pop("max_post_process_passes", None)
-
-        if support_js_module_import_aggregation is None:
-            support_js_module_import_aggregation = kwargs.pop(
-                "support_js_module_import_aggregation", None
-            )
-        else:
-            kwargs.pop("support_js_module_import_aggregation", None)
-
-        if manifest_name is None:
-            manifest_name = kwargs.pop("manifest_name", None)
-        else:
-            kwargs.pop("manifest_name", None)
-
-        if manifest_strict is None:
-            manifest_strict = kwargs.pop("manifest_strict", None)
-        else:
-            kwargs.pop("manifest_strict", None)
-
-        if keep_intermediate_files is None:
-            keep_intermediate_files = kwargs.pop("keep_intermediate_files", None)
-        else:
-            kwargs.pop("keep_intermediate_files", None)
-
-        if keep_original_files is None:
-            keep_original_files = kwargs.pop("keep_original_files", None)
-        else:
-            kwargs.pop("keep_original_files", None)
+        # Django 4.2/5.0 compatibility: Recover OPTIONS from STORAGES when
+        # STATICFILES_STORAGE is auto-generated from STORAGES setting
+        # In Django 5.1+, the deprecated STATICFILES_STORAGE setting was removed
+        if django.VERSION[:2] in [(4, 2), (5, 0)]:
+            self._recover_options_from_storages(kwargs)
 
         # Set configurable attributes as instance attributes if provided
         if max_post_process_passes is not None:
@@ -403,3 +376,54 @@ class EnhancedManifestStaticFilesStorage(
             self.keep_original_files = keep_original_files
 
         super().__init__(location, base_url, *args, **kwargs)
+
+    def _recover_options_from_storages(self, kwargs):
+        """
+        Django 4.2/5.0 compatibility: When STORAGES is overridden, Django automatically
+        sets STATICFILES_STORAGE to the BACKEND value, but loses the OPTIONS.
+        This method recovers the OPTIONS from the original STORAGES setting.
+        """
+        # Check if we can detect that STATICFILES_STORAGE was auto-generated
+        # from STORAGES
+        # This happens when:
+        # 1. STATICFILES_STORAGE points to our class
+        # 2. STORAGES[staticfiles] has OPTIONS but kwargs is empty
+        # 3. Either we're in a test override or STORAGES was explicitly set
+
+        staticfiles_storage_config = settings.STORAGES.get(
+            STATICFILES_STORAGE_ALIAS, {}
+        )
+        storage_options = staticfiles_storage_config.get("OPTIONS", {})
+
+        # If STORAGES has OPTIONS but we didn't receive them in kwargs,
+        # and STATICFILES_STORAGE points to our class, recover the options
+        if (
+            storage_options
+            and not kwargs
+            and settings.STATICFILES_STORAGE
+            == (
+                "django_manifeststaticfiles_enhanced.storage."
+                "EnhancedManifestStaticFilesStorage"
+            )
+        ):
+
+            # Add missing options to kwargs
+            for option_name, option_value in storage_options.items():
+                kwargs[option_name] = option_value
+
+        # Apply kwargs options to instance attributes to bridge the gap between
+        # explicit parameters and OPTIONS dict
+        option_mapping = {
+            "max_post_process_passes": "max_post_process_passes",
+            "support_js_module_import_aggregation": (
+                "support_js_module_import_aggregation"
+            ),
+            "manifest_name": "manifest_name",
+            "manifest_strict": "manifest_strict",
+            "keep_intermediate_files": "keep_intermediate_files",
+            "keep_original_files": "keep_original_files",
+        }
+
+        for kwarg_name, attr_name in option_mapping.items():
+            if kwarg_name in kwargs:
+                setattr(self, attr_name, kwargs.pop(kwarg_name))
