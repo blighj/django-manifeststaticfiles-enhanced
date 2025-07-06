@@ -27,7 +27,7 @@ from .settings import TEST_ROOT
 
 def hashed_file_path(test, path):
     fullpath = test.render_template(test.static_template_snippet(path))
-    return fullpath.removeprefix(settings.STATIC_URL)
+    return fullpath[len(settings.STATIC_URL) :]
 
 
 class TestHashedFiles:
