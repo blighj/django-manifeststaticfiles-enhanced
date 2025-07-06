@@ -15,6 +15,11 @@ This package includes several improvements to Django's `ManifestStaticFilesStora
 - **ticket_34322**: JsLex for ES module support in JavaScript files
 - **ticket_28200**: Optimized storage to avoid unnecessary file operations for unchanged files
 
+## Compatibility
+
+- **Django**: 4.2, 5.0, 5.1, 5.2
+- **Python**: 3.8, 3.9, 3.10, 3.11, 3.12, 3.13
+
 ## Installation
 
 ```bash
@@ -97,11 +102,6 @@ STORAGES = {
 Also available:
  - [max_post_process_passes](https://docs.djangoproject.com/en/5.2/ref/contrib/staticfiles/#django.contrib.staticfiles.storage.ManifestStaticFilesStorage.max_post_process_passes)
  - manifest_name: change the name of the staticfiles.json file
-
-## Compatibility
-
-- **Django**: 4.2, 5.0, 5.1+
-- **Python**: 3.8, 3.9, 3.10, 3.11, 3.12
 
 ## Feature Details
 
