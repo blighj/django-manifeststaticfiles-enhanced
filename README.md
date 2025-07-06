@@ -2,7 +2,7 @@
 
 Enhanced ManifestStaticFilesStorage for Django.
 
-## AI tools were used for creation of this repo
+## AI tools were used for creation of this package
 - **Tool(s) used:** Claude Code
 - **What it was used for:** Used for building initial versions of all features and for initial versions of original tests.
 
