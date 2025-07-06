@@ -18,7 +18,7 @@ This package includes several improvements to Django's `ManifestStaticFilesStora
 ## Compatibility
 
 - **Django**: 4.2, 5.0, 5.1, 5.2
-- **Python**: 3.8, 3.9, 3.10, 3.11, 3.12, 3.13
+- **Python**: 3.9, 3.10, 3.11, 3.12, 3.13
 
 ## Installation
 
@@ -161,10 +161,10 @@ keep_original_files = False
 pip install -e .[dev]
 
 # Run tests
-python runtests.py
+python tests/runtests.py
 
 # Or run specific test modules
-python runtests.py tests.staticfiles_tests.test_storage
+python tests/runtests.py staticfiles_tests.test_storage
 ```
 
 ## Migration from Django's ManifestStaticFilesStorage
