@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import tempfile
+import textwrap
 import unittest
 from io import StringIO
 from pathlib import Path
@@ -1090,6 +1091,45 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                 content = relfile.read()
                 self.assertIn(b"foo.57a5cb9ba68d.png", content)
                 self.assertIn(b"xyz.57a5cb9ba68d.png", content)
+
+    def test_file_missing_during_collectstatic(self):
+        # Create initial static files.
+        file_contents = (
+            ("foo.png", "foo"),
+            (
+                "bar.css",
+                'div{background:url("foo.png");}span{background:url("xyz.png");}',
+            ),
+        )
+        for filename, content in file_contents:
+            with open(self._get_filename_path(filename), "w") as f:
+                f.write(content)
+
+        with self.modify_settings(STATICFILES_DIRS={"append": self._temp_dir}):
+            finders.get_finder.cache_clear()
+            err = StringIO()
+            configured_storage = storage.staticfiles_storage
+            _expected_error_msg = textwrap.dedent(
+                """\
+                The file '{missing}' could not be found with {storage}.
+
+                The {ext} file '{filename}' references a file which could not be found:
+                  {missing}
+
+                Please check the URL references in this {ext} file, particularly any
+                relative paths which might be pointing to the wrong location.
+                """
+            )
+            err_msg = _expected_error_msg.format(
+                missing="test/xyz.png",
+                storage=configured_storage._wrapped,
+                filename="test/bar.css",
+                ext="CSS",
+            )
+            with self.assertRaisesMessage(ValueError, err_msg):
+                call_command(
+                    "collectstatic", interactive=False, verbosity=0, stderr=err
+                )
 
 
 @override_settings(

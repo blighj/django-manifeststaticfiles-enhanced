@@ -1,6 +1,7 @@
 import os
 import posixpath
 import re
+import textwrap
 from urllib.parse import unquote, urldefrag
 
 import django
@@ -253,7 +254,8 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                                 function = getattr(self, function_name)
                                 try:
                                     content = function(name, content, hashed_files)
-                                except ValueError as exc:
+                                except ValueError as e:
+                                    exc = self.make_helpful_exception(e, name)
                                     yield name, None, exc, False
 
                     content_file = ContentFile(content.encode())
@@ -292,6 +294,39 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
                 hashed_files[hash_key] = hashed_name
                 yield name, hashed_name, processed, substitutions
+
+    def make_helpful_exception(self, exception, name):
+        """
+        The ValueError for missing files, such as images/fonts in css, sourcemaps,
+        or js files in imports, lack context of the filebeing processed.
+        Reformat them to be more helpful in revealing the source of the problem.
+        """
+        message = exception.args[0] if len(exception.args) else ""
+        match = self._error_msg_re.search(message)
+        if match:
+            extension = os.path.splitext(name)[1].lstrip(".").upper()
+            message = self._error_msg.format(
+                orig_message=message,
+                filename=name,
+                missing=match.group(1),
+                ext=extension,
+            )
+            exception = ValueError(message)
+        return exception
+
+    _error_msg_re = re.compile(r"^The file '(.+)' could not be found")
+
+    _error_msg = textwrap.dedent(
+        """\
+        {orig_message}
+
+        The {ext} file '{filename}' references a file which could not be found:
+          {missing}
+
+        Please check the URL references in this {ext} file, particularly any
+        relative paths which might be pointing to the wrong location.
+        """
+    )
 
 
 class EnhancedManifestFilesMixin(EnhancedHashedFilesMixin, ManifestFilesMixin):
