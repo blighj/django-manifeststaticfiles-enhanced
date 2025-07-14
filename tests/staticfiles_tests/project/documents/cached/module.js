@@ -17,6 +17,8 @@ import relativeModule from "../nested/js/nested.js";
 
 // Dynamic imports.
 const dynamicModule = import("./module_test.js");
+const dynamicModule = import('./module_test.js');
+const dynamicModule = import(`./module_test.js`);
 
 // import with assert
 import k from"./other.css"assert{type:"css"};
@@ -50,3 +52,5 @@ r = /import/;
 
 //Technically valid but not supported as it should be a real edge case
 `${import("./module_test.js")}`
+//Technically valid but not supported as no way to know what path of module_name is
+import(`./${module_name}`);

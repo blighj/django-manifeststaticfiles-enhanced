@@ -818,7 +818,7 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
 
     def test_module_import(self):
         relpath = self.hashed_file_path("cached/module.js")
-        self.assertEqual(relpath, "cached/module.76a513096c36.js")
+        self.assertEqual(relpath, "cached/module.be91c11e5fd6.js")
         tests = [
             # Relative imports.
             b'import testConst from "./module_test.477bbebe77f0.js";',
@@ -828,6 +828,8 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
             b'import rootConst from "/static/absolute_root.5586327fe78c.js";',
             # Dynamic import.
             b'const dynamicModule = import("./module_test.477bbebe77f0.js");',
+            b"const dynamicModule = import('./module_test.477bbebe77f0.js');",
+            b"const dynamicModule = import(`./module_test.477bbebe77f0.js`);",
             # Creating a module object.
             b'import * as NewModule from "./module_test.477bbebe77f0.js";',
             # Creating a minified module object.
@@ -855,6 +857,7 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
             b" * @param {HTMLElement} elt\n"
             b' * @returns {import("./htmx").HtmxTriggerSpecification[]}\n'
             b" */",
+            b"import(`./${module_name}`);",
         ]
         with storage.staticfiles_storage.open(relpath) as relfile:
             content = relfile.read()
@@ -864,7 +867,7 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
 
     def test_aggregating_modules(self):
         relpath = self.hashed_file_path("cached/module.js")
-        self.assertEqual(relpath, "cached/module.76a513096c36.js")
+        self.assertEqual(relpath, "cached/module.be91c11e5fd6.js")
         tests = [
             b'export * from "./module_test.477bbebe77f0.js";',
             b'export { testConst } from "./module_test.477bbebe77f0.js";',

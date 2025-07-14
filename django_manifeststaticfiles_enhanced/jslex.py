@@ -452,6 +452,10 @@ def find_import_export_strings(file_contents):
     matches = []
 
     def _append_match(token_tuple):
+        # we can't support template strings with variables
+        if token_tuple[1].startswith("`") and "${" in token_tuple[1]:
+            return
+
         # the lex parser returns the string, with the wrapping quotes, remove them
         matches.append((token_tuple[1][1:-1], token_tuple[2] + 1))
 
