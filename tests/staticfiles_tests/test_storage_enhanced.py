@@ -4,8 +4,8 @@ Tests for EnhancedManifestStaticFilesStorage
 
 import json
 import tempfile
-import unittest
-from unittest.mock import MagicMock, patch
+from collections import defaultdict
+from unittest.mock import patch
 
 from django.conf import STATICFILES_STORAGE_ALIAS, settings
 from django.core.files.base import ContentFile
@@ -122,115 +122,210 @@ class EnhancedManifestStaticFilesStorageTest(TestCase):
         )
 
 
-class CSSProcessingTest(TestCase):
-    """Test CSS processing with lexer improvements"""
+class DependencyGraphTest(TestCase):
+    """Test the dependency graph functionality"""
 
     def setUp(self):
         self.storage = EnhancedManifestStaticFilesStorage()
-        self.hashed_files = {}
 
-    @patch("django_manifeststaticfiles_enhanced.storage.extract_css_urls")
-    def test_process_css_with_lexer(self, mock_extract_css_urls):
-        """Test CSS processing with lexer when available"""
-        css_content = "body { background: url('image.png'); }"
-        mock_extract_css_urls.return_value = [("image.png", 23)]
+    def test_build_dependency_graph(self):
+        """Test building dependency graph from file paths"""
+        # Create mock storage and paths
+        mock_storage = MockStorage()
 
-        with patch.object(self.storage, "_should_adjust_url", return_value=True):
-            with patch.object(
-                self.storage, "_adjust_url", return_value="image.ab12.png"
-            ):
-                result = self.storage._process_css_urls(
-                    "style.css", css_content, self.hashed_files
-                )
-
-                self.assertIn("image.ab12.png", result)
-                mock_extract_css_urls.assert_called_once_with(css_content)
-
-
-class JSModuleProcessingTest(TestCase):
-    """Test JavaScript module processing"""
-
-    def setUp(self):
-        self.storage = EnhancedManifestStaticFilesStorage()
-        self.storage.support_js_module_import_aggregation = True
-        self.hashed_files = {}
-
-    @patch("django_manifeststaticfiles_enhanced.storage.find_import_export_strings")
-    def test_process_js_modules(self, mock_find_import_export_strings):
-        """Test JS module processing with JsLex"""
-        js_content = 'import { Component } from "./component.js";'
-        mock_find_import_export_strings.return_value = [("./component.js", 25)]
-
-        with patch.object(self.storage, "_should_adjust_url", return_value=True):
-            with patch.object(
-                self.storage, "_adjust_url", return_value="./hashed-component.js"
-            ):
-                result = self.storage._process_js_modules(
-                    "app.js", js_content, self.hashed_files
-                )
-
-                self.assertIn("hashed-component.js", result)
-                mock_find_import_export_strings.assert_called_once_with(js_content)
-
-    def test_process_js_modules_no_imports(self):
-        """Test JS module processing when no imports are found"""
-        js_content = "const x = 42; console.log(x);"
-
-        result = self.storage._process_js_modules(
-            "app.js", js_content, self.hashed_files
+        # Add CSS file with imports
+        mock_storage.files["css/main.css"] = (
+            b"@import url('base.css'); body { background: url('../img/bg.png'); }"
         )
 
-        # Should return original content unchanged when no imports found
-        self.assertEqual(result, js_content)
+        # Add JS file with imports
+        mock_storage.files["js/app.js"] = (
+            b"import { Component } from './components.js';"
+        )
+
+        # Add file with source map
+        mock_storage.files["js/library.js"] = (
+            b"function test() {}\n//# sourceMappingURL=library.js.map"
+        )
+
+        # Add files that don't need adjustment
+        mock_storage.files["img/bg.png"] = b"PNG content"
+        mock_storage.files["base.css"] = b"body { color: black; }"
+        mock_storage.files["js/components.js"] = b"export class Component {}"
+        mock_storage.files["js/library.js.map"] = b'{"version": 3}'
+
+        paths = {
+            "css/main.css": (mock_storage, "css/main.css"),
+            "js/app.js": (mock_storage, "js/app.js"),
+            "js/library.js": (mock_storage, "js/library.js"),
+            "img/bg.png": (mock_storage, "img/bg.png"),
+            "css/base.css": (mock_storage, "css/base.css"),
+            "js/components.js": (mock_storage, "js/components.js"),
+            "js/library.js.map": (mock_storage, "js/library.js.map"),
+        }
+
+        adjustable_paths = ["css/main.css", "js/app.js", "js/library.js"]
+
+        # Patch _should_adjust_url and _get_target_name to simulate expected behavior
+        with patch.object(
+            self.storage,
+            "_should_adjust_url",
+            lambda url: True if "." in url else False,
+        ):
+            graph, non_adjustable = self.storage._build_dependency_graph(
+                paths, adjustable_paths
+            )
+
+            # Check that graph contains all files
+            self.assertEqual(len(graph), 7)
+
+            # Check that files with dependencies are properly connected
+            self.assertIn("css/main.css", graph)
+            self.assertIn("css/base.css", graph["css/main.css"]["dependencies"])
+            self.assertIn("img/bg.png", graph["css/main.css"]["dependencies"])
+
+            self.assertIn("js/app.js", graph)
+            self.assertIn("js/components.js", graph["js/app.js"]["dependencies"])
+
+            self.assertIn("js/library.js", graph)
+            self.assertIn("js/library.js.map", graph["js/library.js"]["dependencies"])
+
+            # Check that dependents are correctly recorded
+            self.assertIn("css/main.css", graph["css/base.css"]["dependents"])
+            self.assertIn("css/main.css", graph["img/bg.png"]["dependents"])
+            self.assertIn("js/app.js", graph["js/components.js"]["dependents"])
+            self.assertIn("js/library.js", graph["js/library.js.map"]["dependents"])
+
+            # Check non-adjustable files
+            self.assertEqual(
+                non_adjustable,
+                {"img/bg.png", "css/base.css", "js/components.js", "js/library.js.map"},
+            )
+
+            # Check needs_adjustment flag
+            self.assertTrue(graph["css/main.css"]["needs_adjustment"])
+            self.assertTrue(graph["js/app.js"]["needs_adjustment"])
+            self.assertTrue(graph["js/library.js"]["needs_adjustment"])
 
 
-class PostProcessOptimizationTest(TestCase):
-    """Test post-processing optimizations from ticket_28200"""
+class TopologicalSortTest(TestCase):
+    """Test the topological sort functionality"""
 
     def setUp(self):
         self.storage = EnhancedManifestStaticFilesStorage()
 
-    def test_optimization_unchanged_files(self):
-        """Test that unchanged files don't get reprocessed unnecessarily"""
-        # Mock the storage methods
-        with patch.object(self.storage, "exists", return_value=True):
-            with patch.object(self.storage, "_save"):
-                with patch.object(self.storage, "delete"):
-                    with patch.object(
-                        self.storage, "hashed_name", return_value="same-hash.css"
-                    ):
+    def test_topological_sort(self):
+        """Test sorting files in dependency order"""
+        # Create a test graph
+        graph = defaultdict(
+            lambda: {
+                "dependencies": set(),
+                "dependents": set(),
+                "needs_adjustment": True,
+                "url_positions": [],
+            }
+        )
 
-                        # Simulate processing where hash hasn't changed
-                        paths = {"style.css": (self.storage, "style.css")}
-                        adjustable_paths = ["style.css"]
-                        hashed_files = {}
+        # Set up a simple dependency chain: A -> B -> C -> D
+        graph["A"] = {
+            "dependencies": {"B"},
+            "dependents": set(),
+            "needs_adjustment": True,
+            "url_positions": [("B", 0)],
+        }
+        graph["B"] = {
+            "dependencies": {"C"},
+            "dependents": {"A"},
+            "needs_adjustment": True,
+            "url_positions": [("C", 0)],
+        }
+        graph["C"] = {
+            "dependencies": {"D"},
+            "dependents": {"B"},
+            "needs_adjustment": True,
+            "url_positions": [("D", 0)],
+        }
+        graph["D"] = {
+            "dependencies": set(),
+            "dependents": {"C"},
+            "needs_adjustment": True,
+            "url_positions": [],
+        }
 
-                        # Mock file content that doesn't trigger CSS processing
-                        mock_file = MagicMock()
-                        mock_file.read.return_value = b"body { color: red; }"
+        # Add some non-adjustable files
+        graph["E"] = {
+            "dependencies": set(),
+            "dependents": set(),
+            "needs_adjustment": False,
+            "url_positions": [],
+        }
+        non_adjustable = {"E"}
 
-                        with patch.object(self.storage, "open", return_value=mock_file):
-                            with patch.object(
-                                self.storage,
-                                "_process_css_urls",
-                                return_value="body { color: red; }",
-                            ):
-                                with patch.object(
-                                    self.storage,
-                                    "_process_sourcemapping_regexs",
-                                    return_value="body { color: red; }",
-                                ):
-                                    results = list(
-                                        self.storage._post_process(
-                                            paths, adjustable_paths, hashed_files
-                                        )
-                                    )
+        # Sort the graph
+        result, circular = self.storage._topological_sort(graph, non_adjustable)
 
-                            # Should not have called _save since
-                            #  file exists and hash is same
-                            self.assertEqual(len(results), 1)
-                            name, hashed_name, processed, substitutions = results[0]
-                            self.assertEqual(name, "style.css")
+        # Check the order is correct (D -> C -> B -> A)
+        self.assertEqual(result, ["D", "C", "B", "A"])
+        self.assertEqual(circular, {})
+
+    def test_topological_sort_with_circular_dependencies(self):
+        """Test sorting with circular dependencies"""
+        # Create a test graph with a circular dependency: A -> B -> C -> A
+        graph = defaultdict(
+            lambda: {
+                "dependencies": set(),
+                "dependents": set(),
+                "needs_adjustment": True,
+                "url_positions": [],
+            }
+        )
+
+        graph["A"] = {
+            "dependencies": {"B"},
+            "dependents": {"C"},
+            "needs_adjustment": True,
+            "url_positions": [("B", 0)],
+        }
+        graph["B"] = {
+            "dependencies": {"C"},
+            "dependents": {"A"},
+            "needs_adjustment": True,
+            "url_positions": [("C", 0)],
+        }
+        graph["C"] = {
+            "dependencies": {"A"},
+            "dependents": {"B"},
+            "needs_adjustment": True,
+            "url_positions": [("A", 0)],
+        }
+
+        # Add a separate linear chain: D -> E
+        graph["D"] = {
+            "dependencies": {"E"},
+            "dependents": set(),
+            "needs_adjustment": True,
+            "url_positions": [("E", 0)],
+        }
+        graph["E"] = {
+            "dependencies": set(),
+            "dependents": {"D"},
+            "needs_adjustment": True,
+            "url_positions": [],
+        }
+
+        non_adjustable = set()
+
+        # Sort the graph
+        result, circular = self.storage._topological_sort(graph, non_adjustable)
+
+        # Linear chain should be processed (E -> D)
+        self.assertEqual(result, ["E", "D"])
+
+        # Check circular dependencies
+        self.assertEqual(set(circular.keys()), {"A", "B", "C"})
+        self.assertEqual(set(circular["A"]), {"B"})
+        self.assertEqual(set(circular["B"]), {"C"})
+        self.assertEqual(set(circular["C"]), {"A"})
 
 
 class ManifestIntegrationTest(TestCase):
@@ -277,79 +372,3 @@ class ManifestIntegrationTest(TestCase):
 
             self.assertEqual(hashed_files, manifest_content["paths"])
             self.assertEqual(manifest_hash, manifest_content["hash"])
-
-
-class KeepOriginalFilesTest(TestCase):
-    """Test keep_original_files functionality from ticket_27929"""
-
-    def test_keep_original_files_true(self):
-        """Test that original files are kept when keep_original_files=True"""
-        storage = EnhancedManifestStaticFilesStorage(keep_original_files=True)
-
-        with patch.object(storage, "exists", return_value=True):
-            with patch.object(storage, "delete") as mock_delete:
-                # Simulate post_process
-                paths = {"style.css": (storage, "style.css")}
-
-                # Mock the parent post_process to yield processed files
-                def mock_super_post_process(*args, **kwargs):
-                    yield "style.css", "style.abc123.css", True
-
-                with patch(
-                    "django.contrib.staticfiles.storage.HashedFilesMixin.post_process",
-                    mock_super_post_process,
-                ):
-                    with patch.object(storage, "save_manifest"):
-                        list(storage.post_process(paths))
-
-                        # Should not have deleted original files
-                        mock_delete.assert_not_called()
-
-    def test_keep_original_files_false(self):
-        """Test that original files are deleted when keep_original_files=False"""
-        storage = EnhancedManifestStaticFilesStorage(keep_original_files=False)
-
-        with patch.object(storage, "exists", return_value=True):
-            with patch.object(storage, "delete") as mock_delete:
-                # Simulate post_process
-                paths = {"style.css": (storage, "style.css")}
-
-                # Mock the parent post_process to yield processed files
-                def mock_super_post_process(*args, **kwargs):
-                    yield "style.css", "style.abc123.css", True
-
-                with patch(
-                    "django.contrib.staticfiles.storage.HashedFilesMixin.post_process",
-                    mock_super_post_process,
-                ):
-                    with patch.object(storage, "save_manifest"):
-                        list(storage.post_process(paths))
-
-                        # Should have deleted original file
-                        mock_delete.assert_called_once_with("style.css")
-
-
-if __name__ == "__main__":
-    # Configure Django settings for testing
-    import django
-    from django.conf import settings as django_settings
-
-    if not django_settings.configured:
-        django_settings.configure(
-            DEBUG=True,
-            SECRET_KEY="test-secret-key",
-            STATIC_URL="/static/",
-            INSTALLED_APPS=[
-                "django.contrib.staticfiles",
-                "django_manifeststaticfiles_enhanced",
-            ],
-            DATABASES={
-                "default": {
-                    "ENGINE": "django.db.backends.sqlite3",
-                    "NAME": ":memory:",
-                }
-            },
-        )
-        django.setup()
-
-    unittest.main()

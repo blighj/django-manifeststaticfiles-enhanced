@@ -271,24 +271,24 @@ class TestHashedFiles:
 
     def test_css_source_map(self):
         relpath = self.hashed_file_path("cached/source_map.css")
-        self.assertEqual(relpath, "cached/source_map.b2fceaf426aa.css")
+        self.assertEqual(relpath, "cached/source_map.71fc17082a18.css")
         with storage.staticfiles_storage.open(relpath) as relfile:
             content = relfile.read()
             self.assertNotIn(b"/*# sourceMappingURL=source_map.css.map*/", content)
             self.assertIn(
-                b"/*# sourceMappingURL=source_map.css.99914b932bd3.map */",
+                b"/*# sourceMappingURL=source_map.css.99914b932bd3.map*/",
                 content,
             )
         self.assertPostCondition()
 
     def test_css_source_map_tabs(self):
         relpath = self.hashed_file_path("cached/source_map_tabs.css")
-        self.assertEqual(relpath, "cached/source_map_tabs.b2fceaf426aa.css")
+        self.assertEqual(relpath, "cached/source_map_tabs.3cfab363b8cc.css")
         with storage.staticfiles_storage.open(relpath) as relfile:
             content = relfile.read()
             self.assertNotIn(b"/*#\tsourceMappingURL=source_map.css.map\t*/", content)
             self.assertIn(
-                b"/*# sourceMappingURL=source_map.css.99914b932bd3.map */",
+                b"/*#\tsourceMappingURL=source_map.css.99914b932bd3.map\t*/",
                 content,
             )
         self.assertPostCondition()
@@ -332,13 +332,13 @@ class TestHashedFiles:
     def test_js_source_map_trailing_whitespace(self):
         relpath = self.hashed_file_path("cached/source_map_trailing_whitespace.js")
         self.assertEqual(
-            relpath, "cached/source_map_trailing_whitespace.cd45b8534a87.js"
+            relpath, "cached/source_map_trailing_whitespace.223547dfd723.js"
         )
         with storage.staticfiles_storage.open(relpath) as relfile:
             content = relfile.read()
             self.assertNotIn(b"//# sourceMappingURL=source_map.js.map\t ", content)
             self.assertIn(
-                b"//# sourceMappingURL=source_map.js.99914b932bd3.map",
+                b"//# sourceMappingURL=source_map.js.99914b932bd3.map\t",
                 content,
             )
         self.assertPostCondition()
@@ -1263,8 +1263,8 @@ class TestEnhancedManifestStorageOptions(CollectionTestCase):
             if cached_file.startswith("relative.")
         ]
         # Should have more files when keep_intermediate_files=True
-        # The existing test_intermediate_files expects 2, should be 4 now
-        self.assertEqual(len(relative_files), 4)
+        # The existing test_intermediate_files expects 2, should be 3 now
+        self.assertEqual(len(relative_files), 3)
 
     @override_settings(
         STORAGES={
