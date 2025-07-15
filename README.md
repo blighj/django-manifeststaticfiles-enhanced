@@ -187,6 +187,13 @@ This project is licensed under the BSD 3-Clause License - the same license as Dj
 
 ## Changelog
 
+### 0.2.0
+
+- Performence improvements
+- Improved exception messages
+- Fixed issue with js dynamic imports that include template literals
+- Improved handling of soucerMapURLs
+
 ### 0.1.0 (Initial Release)
 
 - Includes `keep_original_files` option ([ticket_27929](https://code.djangoproject.com/ticket/27929))
