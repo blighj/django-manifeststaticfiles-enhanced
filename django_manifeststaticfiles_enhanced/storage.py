@@ -2,6 +2,7 @@ import os
 import posixpath
 import re
 import textwrap
+from collections import defaultdict
 from urllib.parse import unquote, urldefrag
 
 import django
@@ -14,7 +15,6 @@ from django.contrib.staticfiles.storage import (
 from django.contrib.staticfiles.utils import matches_patterns
 from django.core.files.base import ContentFile
 
-# Import our inlined jslex functionality
 from django_manifeststaticfiles_enhanced.jslex import (
     extract_css_urls,
     find_import_export_strings,
@@ -23,34 +23,19 @@ from django_manifeststaticfiles_enhanced.jslex import (
 
 class EnhancedHashedFilesMixin(HashedFilesMixin):
     support_js_module_import_aggregation = True
-    adjust_functions = {
-        "*.js": ("_process_js_modules", "_process_sourcemapping_regexs"),
-        "*.css": ("_process_css_urls", "_process_sourcemapping_regexs"),
-    }
 
-    patterns = (
-        (
-            "*.css",
-            (
-                (
-                    (
-                        r"(?m)^(?P<matched>/\*#[ \t]"
-                        r"(?-i:sourceMappingURL)=(?P<url>.*)[ \t]*\*/)$"
-                    ),
-                    "/*# sourceMappingURL=%(url)s */",
-                ),
-            ),
-        ),
-        (
-            "*.js",
-            (
-                (
-                    r"(?m)^(?P<matched>//# (?-i:sourceMappingURL)=(?P<url>.*))$",
-                    "//# sourceMappingURL=%(url)s",
-                ),
-            ),
-        ),
-    )
+    def post_process(self, paths, dry_run=False, **options):
+        """
+        Post process the given dictionary of files (called from collectstatic).
+
+        Uses a dependency graph approach to minimize the number of passes required.
+        """
+        # don't even dare to process the files if we're in dry run mode
+        if dry_run:
+            return
+
+        # Process files using the dependency graph
+        yield from self._process_with_dependency_graph(paths, dry_run, **options)
 
     def _should_adjust_url(self, url):
         """
@@ -81,7 +66,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         url_path, fragment = urldefrag(url)
 
         if url_path.startswith("/"):
-            # Otherwise the condition above would have returned prematurely.
+            # _should_adjust_url would have checked this.
             assert url_path.startswith(settings.STATIC_URL)
             target_name = url_path[len(settings.STATIC_URL) :]
         else:
@@ -112,190 +97,341 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         # Ensure we return a string (handle mock objects in tests)
         return str(transformed_url)
 
-    def url_converter(self, name, hashed_files, template=None):
+    def _get_target_name(self, url, source_name):
         """
-        Return the custom URL converter for the given file name.
+        Get the target file name from a URL and source file name
         """
-        if template is None:
-            template = self.default_template
+        url_path, _ = urldefrag(url)
 
-        def converter(matchobj):
-            """
-            Convert the matched URL to a normalized and hashed URL.
-            """
-            matches = matchobj.groupdict()
-            matched = matches["matched"]
-            url = matches["url"]
+        if url_path.startswith("/"):
+            # Otherwise the condition above would have returned prematurely.
+            assert url_path.startswith(settings.STATIC_URL)
+            target_name = url_path[len(settings.STATIC_URL) :]
+        else:
+            # We're using the posixpath module to mix paths and URLs conveniently.
+            source_name = (
+                source_name if os.sep == "/" else source_name.replace(os.sep, "/")
+            )
+            target_name = posixpath.join(posixpath.dirname(source_name), url_path)
 
-            if not self._should_adjust_url(url):
-                return matched
+        return posixpath.normpath(target_name)
 
-            try:
-                transformed_url = self._adjust_url(url, name, hashed_files)
-                matches["url"] = unquote(transformed_url)
-                return template % matches
-            except ValueError:
-                # Return original if we can't process
-                return matched
-
-        return converter
-
-    def _process_css_urls(self, name, content, hashed_files):
+    def _build_dependency_graph(self, paths, adjustable_paths):
         """
-        Process CSS content using the CSS lexer (ticket_21080).
+        Build a dependency graph of all files.
+
+        Returns:
+            graph: Dict mapping each file to its dependencies
+            non_adjustable: Set of files that don't need processing
         """
-        search_content = content.lower()
-        complex_adjustments = "url" in search_content or "import" in search_content
-        if not complex_adjustments:
+
+        # Graph structure:
+        # {
+        #   file_name: {
+        #     'dependencies': set(dependency_files),
+        #     'dependents': set(files_that_depend_on_this),
+        #     'needs_adjustment': bool,
+        #     'url_positions': [(url, position), ...]
+        #   }
+        # }
+        graph = defaultdict(
+            lambda: {
+                "dependencies": set(),
+                "dependents": set(),
+                "needs_adjustment": False,
+                "url_positions": [],
+            }
+        )
+        non_adjustable = set(paths.keys()) - set(adjustable_paths)
+
+        # Initialize all files in the graph
+        for name in paths:
+            if name not in graph:
+                graph[name] = {
+                    "dependencies": set(),
+                    "dependents": set(),
+                    "needs_adjustment": False,
+                    "url_positions": [],
+                }
+
+        source_map_patterns = {
+            "*.css": re.compile(
+                r"(?m)^/\*#[ \t](?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*\*/$",
+                re.IGNORECASE,
+            ),
+            "*.js": re.compile(
+                r"(?m)^//# (?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*$", re.IGNORECASE
+            ),
+        }
+
+        for name in adjustable_paths:
+            storage, path = paths[name]
+
+            with storage.open(path) as original_file:
+                try:
+                    content = original_file.read().decode("utf-8")
+                except UnicodeDecodeError:
+                    graph[name]["needs_adjustment"] = True
+                    continue
+
+                url_positions = []
+                dependencies = set()
+
+                # Process CSS files
+                if matches_patterns(path, ("*.css",)):
+                    for url_name, position in extract_css_urls(content):
+                        if self._should_adjust_url(url_name):
+                            target = self._get_target_name(url_name, name)
+                            dependencies.add(target)
+                            url_positions.append((url_name, position))
+
+                # Process JS files with module imports
+                if self.support_js_module_import_aggregation and matches_patterns(
+                    path, ("*.js",)
+                ):
+                    for url_name, position in find_import_export_strings(content):
+                        if self._should_adjust_url(url_name):
+                            target = self._get_target_name(url_name, name)
+                            dependencies.add(target)
+                            url_positions.append((url_name, position))
+
+                # Check for sourceMappingURL
+                if "sourceMappingURL" in content:
+                    for extension, pattern in source_map_patterns.items():
+                        if matches_patterns(name, (extension,)):
+                            for match in pattern.finditer(content):
+                                url = match.group("url")
+                                if self._should_adjust_url(url):
+                                    target = self._get_target_name(url, name)
+                                    dependencies.add(target)
+                                    url_positions.append((url, match.start("url")))
+
+                # Update graph with dependencies and URL positions
+                if url_positions:
+                    graph[name]["url_positions"] = url_positions
+                    graph[name]["needs_adjustment"] = True
+
+                    # Add dependencies to the graph
+                    graph[name]["dependencies"].update(dependencies)
+
+                    # Update dependents for each dependency
+                    for dep in dependencies:
+                        if dep in graph:
+                            graph[dep]["dependents"].add(name)
+                else:
+                    non_adjustable.add(name)
+
+        return graph, non_adjustable
+
+    def _topological_sort(self, graph, non_adjustable):
+        """
+        Sort the files in dependency order using Kahn's algorithm.
+        Files with no dependencies (or only dependencies on non-adjustable files)
+        come first.
+
+        Returns:
+            List of files that have linear dpendencies in processing order
+            Dict of files that have circular dependencies
+        """
+        result = []
+        in_degree = defaultdict(int)
+        circular = {}
+
+        # Calculate in-degree for each node
+        # (count dependencies not in non_adjustable)
+        for node, data in graph.items():
+            if node not in non_adjustable and data["needs_adjustment"]:
+                for dep in data["dependencies"]:
+                    if dep not in non_adjustable and dep in graph:
+                        in_degree[node] += 1
+
+        # Start with nodes that have no dependencies or only depend on
+        # non-adjustable files
+        queue = [
+            node
+            for node, data in graph.items()
+            if node not in non_adjustable
+            and data["needs_adjustment"]
+            and in_degree[node] == 0
+        ]
+
+        while queue:
+            node = queue.pop(0)
+            result.append(node)
+
+            # Remove this node from the graph (reduce in-degree of dependents)
+            for dependent in graph[node]["dependents"]:
+                if dependent not in non_adjustable and dependent not in result:
+                    in_degree[dependent] -= 1
+                    if in_degree[dependent] == 0:
+                        queue.append(dependent)
+
+        # If we still have nodes with in-degree > 0, we have cycles
+        remaining = {
+            node: data
+            for node, data in graph.items()
+            if node not in result
+            and node not in non_adjustable
+            and data["needs_adjustment"]
+        }
+
+        if remaining:
+            # Detect and record circular dependencies
+            for node in remaining:
+                circular[node] = [
+                    dep for dep in graph[node]["dependencies"] if dep in remaining
+                ]
+
+        return result, circular
+
+    def _process_file_content(self, name, content, url_positions, hashed_files):
+        """
+        Process file content by substituting URLs.
+        url_positions is a list of (url, position) tuples.
+        """
+        if not url_positions:
             return content
+
         result_parts = []
         last_position = 0
 
-        url_matches = extract_css_urls(content)
+        # Sort by position to ensure correct order
+        sorted_positions = sorted(
+            url_positions,
+            key=lambda x: x[1],
+        )
 
-        for url_name, position in url_matches:
+        for url, pos in sorted_positions:
+            position = pos
             # Add content before this URL
             result_parts.append(content[last_position:position])
 
-            if self._should_adjust_url(url_name):
-                transformed_url = self._adjust_url(url_name, name, hashed_files)
-                result_parts.append(transformed_url)
-            else:
-                result_parts.append(url_name)
-
-            last_position = position + len(url_name)
+            transformed_url = self._adjust_url(url, name, hashed_files)
+            result_parts.append(transformed_url)
+            last_position = position + len(url)
 
         # Add remaining content
         result_parts.append(content[last_position:])
         return "".join(result_parts)
 
-    def _process_js_modules(self, name, content, hashed_files):
-        """Process JavaScript import/export statements."""
-        if not self.support_js_module_import_aggregation:
-            return content
-        complex_adjustments = "import" in content or (
-            "export" in content and "from" in content
-        )
-
-        if not complex_adjustments:
-            return content
-
-        import_matches = find_import_export_strings(content)
-
-        if not import_matches:
-            return content
-
-        result_parts = []
-        last_position = 0
-
-        for import_name, position in import_matches:
-            if self._should_adjust_url(import_name):
-                # Add content before this import
-                result_parts.append(content[last_position:position])
-
-                # Process the import
-                replacement = self._adjust_url(import_name, name, hashed_files)
-                result_parts.append(replacement)
-                # Update position tracker
-                last_position = position + len(import_name)
-
-        # Add remaining content
-        result_parts.append(content[last_position:])
-        return "".join(result_parts)
-
-    def _process_sourcemapping_regexs(self, name, content, hashed_files):
-        if "sourceMappingURL" not in content:
-            return content
-
-        for extension, patterns in self._patterns.items():
-            if matches_patterns(name, (extension,)):
-                for pattern, template in patterns:
-                    converter = self.url_converter(name, hashed_files, template)
-                    content = pattern.sub(converter, content)
-        return content
-
-    def _post_process(self, paths, adjustable_paths, hashed_files):
+    def _process_file(self, name, storage_and_path, hashed_files, graph):
         """
-        Enhanced _post_process with optimization from ticket_28200.
+        Process a single file using the unified graph structure.
         """
+        storage, path = storage_and_path
 
-        def path_level(name):
-            return len(name.split(os.sep))
-
-        for name in sorted(paths, key=path_level, reverse=True):
-            substitutions = True
-            storage, path = paths[name]
+        try:
             with storage.open(path) as original_file:
-                cleaned_name = self.clean_name(name)
-                hash_key = self.hash_key(cleaned_name)
-
-                if hash_key not in hashed_files:
-                    hashed_name = self.hashed_name(name, original_file)
-                else:
-                    hashed_name = hashed_files[hash_key]
-
+                # Calculate hash of original file
                 if hasattr(original_file, "seek"):
                     original_file.seek(0)
 
+                hashed_name = self.hashed_name(name, original_file)
                 hashed_file_exists = self.exists(hashed_name)
                 processed = False
 
-                if name in adjustable_paths:
-                    old_hashed_name = hashed_name
+                # If this is an adjustable file with URL positions,
+                # apply transformations
+                if name in graph and graph[name]["needs_adjustment"]:
                     try:
+                        if hasattr(original_file, "seek"):
+                            original_file.seek(0)
+
                         content = original_file.read().decode("utf-8")
-                    except UnicodeDecodeError as exc:
-                        yield name, None, exc, False
-                        continue
 
-                    for extension, function_names in self.adjust_functions.items():
-                        if matches_patterns(path, (extension,)):
-                            for function_name in function_names:
-                                function = getattr(self, function_name)
-                                try:
-                                    content = function(name, content, hashed_files)
-                                except ValueError as e:
-                                    exc = self.make_helpful_exception(e, name)
-                                    yield name, None, exc, False
+                        # Apply URL substitutions using stored positions
+                        content = self._process_file_content(
+                            name, content, graph[name]["url_positions"], hashed_files
+                        )
 
-                    content_file = ContentFile(content.encode())
+                        # Create a content file and calculate its hash
+                        content_file = ContentFile(content.encode())
+                        new_hashed_name = self.hashed_name(name, content_file)
 
-                    # Optimization: only recreate if file doesn't exist or hash changed
-                    new_hashed_name = self.hashed_name(name, content_file)
+                        # Handle file saving logic
+                        if hashed_file_exists and not self.keep_intermediate_files:
+                            self.delete(hashed_name)
+                        elif self.keep_intermediate_files and not hashed_file_exists:
+                            # Save original hashed file for reference if needed
+                            self._save(hashed_name, content_file)
 
-                    # Handle intermediate files - delete existing if not keeping them
-                    if hashed_file_exists and not self.keep_intermediate_files:
-                        self.delete(hashed_name)
-                    elif self.keep_intermediate_files and not hashed_file_exists:
-                        # Save intermediate file for reference
-                        self._save(hashed_name, content_file)
+                        if (
+                            not self.exists(new_hashed_name)
+                            or hashed_name != new_hashed_name
+                        ):
+                            if self.exists(new_hashed_name):
+                                self.delete(new_hashed_name)
+                            saved_name = self._save(new_hashed_name, content_file)
+                            hashed_name = self.clean_name(saved_name)
+                        else:
+                            hashed_name = new_hashed_name
 
-                    # Only save if file doesn't exist or content changed
-                    if (
-                        not self.exists(new_hashed_name)
-                        or old_hashed_name != new_hashed_name
-                    ):
-                        if self.exists(new_hashed_name):
-                            self.delete(new_hashed_name)
-                        saved_name = self._save(new_hashed_name, content_file)
-                        hashed_name = self.clean_name(saved_name)
-                    else:
-                        hashed_name = new_hashed_name
-
-                    if old_hashed_name == hashed_name:
-                        substitutions = False
-                    processed = True
-
-                if not processed:
-                    if not hashed_file_exists:
                         processed = True
-                        saved_name = self._save(hashed_name, original_file)
-                        hashed_name = self.clean_name(saved_name)
 
-                hashed_files[hash_key] = hashed_name
-                yield name, hashed_name, processed, substitutions
+                    except UnicodeDecodeError as exc:
+                        # Re-raise UnicodeDecodeError to match previous behavior
+                        return name, None, exc
+                    except ValueError as exc:
+                        exc = self._make_helpful_exception(exc, name)
+                        # Re-raise ValueError to match previous behavior
+                        return name, None, exc
 
-    def make_helpful_exception(self, exception, name):
+                elif not processed and not hashed_file_exists:
+                    # For non-adjustable files or when processing fails,
+                    # just copy the file
+                    if hasattr(original_file, "seek"):
+                        original_file.seek(0)
+                    processed = True
+                    saved_name = self._save(hashed_name, original_file)
+                    hashed_name = self.clean_name(saved_name)
+
+                return name, hashed_name, processed
+
+        except Exception as exc:
+            # Re-raise exceptions to match previous behavior
+            return name, None, exc
+
+    def _process_with_dependency_graph(self, paths, dry_run=False, **options):
+        """
+        Process static files using a unified dependency graph approach.
+        """
+        if dry_run:
+            return
+
+        # Build the dependency graph
+        adjustable_paths = [
+            path for path in paths if matches_patterns(path, self._patterns)
+        ]
+
+        graph, non_adjustable = self._build_dependency_graph(paths, adjustable_paths)
+
+        # Sort files in dependency order
+        linear_deps, circular_deps = self._topological_sort(graph, non_adjustable)
+
+        # Handle circular dependencies
+        if circular_deps:
+            problem_paths = ", ".join(sorted(circular_deps))
+            yield problem_paths, None, RuntimeError(
+                "Max post-process passes exceeded for circular dependencies."
+            )
+            return
+
+        # Dictionary to store hashed file names
+        hashed_files = {}
+
+        # First process non-adjustable files and linear dependencies
+        for name in list(non_adjustable) + linear_deps:
+            result = self._process_file(name, paths[name], hashed_files, graph=graph)
+            if result:
+                name, hashed_name, processed = result
+                if processed:
+                    hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
+                    yield name, hashed_name, processed
+
+        # Store the processed paths
+        self.hashed_files.update(hashed_files)
+
+    def _make_helpful_exception(self, exception, name):
         """
         The ValueError for missing files, such as images/fonts in css, sourcemaps,
         or js files in imports, lack context of the filebeing processed.
