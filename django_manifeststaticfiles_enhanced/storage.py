@@ -189,11 +189,18 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                 if self.support_js_module_import_aggregation and matches_patterns(
                     path, ("*.js",)
                 ):
-                    for url_name, position in find_import_export_strings(content):
-                        if self._should_adjust_url(url_name):
-                            target = self._get_target_name(url_name, name)
-                            dependencies.add(target)
-                            url_positions.append((url_name, position))
+                    try:
+                        for url_name, position in find_import_export_strings(content):
+                            if self._should_adjust_url(url_name):
+                                target = self._get_target_name(url_name, name)
+                                dependencies.add(target)
+                                url_positions.append((url_name, position))
+                    except ValueError as e:
+                        message = e.args[0] if len(e.args) else ""
+                        message = (
+                            f"The js file '{name}' could not be processed.\n{message}"
+                        )
+                        raise ValueError(message)
 
                 # Check for sourceMappingURL
                 if "sourceMappingURL" in content:

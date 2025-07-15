@@ -49,8 +49,3 @@ r = /import/;
  * @param {HTMLElement} elt
  * @returns {import("./htmx").HtmxTriggerSpecification[]}
  */
-
-//Technically valid but not supported as it should be a real edge case
-`${import("./module_test.js")}`
-//Technically valid but not supported as no way to know what path of module_name is
-import(`./${module_name}`);

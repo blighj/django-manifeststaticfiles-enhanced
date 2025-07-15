@@ -818,7 +818,7 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
 
     def test_module_import(self):
         relpath = self.hashed_file_path("cached/module.js")
-        self.assertEqual(relpath, "cached/module.be91c11e5fd6.js")
+        self.assertEqual(relpath, "cached/module.5960f712d6bb.js")
         tests = [
             # Relative imports.
             b'import testConst from "./module_test.477bbebe77f0.js";',
@@ -851,13 +851,11 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
             b"'import(\"./non-existent-3\")'",
             b"\"import('./non-existent-4')\"",
             b'`import("./non-existent-5")`',
-            b'`${import("./module_test.js")}`',
             b"r = /import/;",
             b"/**\n"
             b" * @param {HTMLElement} elt\n"
             b' * @returns {import("./htmx").HtmxTriggerSpecification[]}\n'
             b" */",
-            b"import(`./${module_name}`);",
         ]
         with storage.staticfiles_storage.open(relpath) as relfile:
             content = relfile.read()
@@ -867,7 +865,7 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
 
     def test_aggregating_modules(self):
         relpath = self.hashed_file_path("cached/module.js")
-        self.assertEqual(relpath, "cached/module.be91c11e5fd6.js")
+        self.assertEqual(relpath, "cached/module.5960f712d6bb.js")
         tests = [
             b'export * from "./module_test.477bbebe77f0.js";',
             b'export { testConst } from "./module_test.477bbebe77f0.js";',
@@ -1130,6 +1128,27 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                 ext="CSS",
             )
             with self.assertRaisesMessage(ValueError, err_msg):
+                call_command(
+                    "collectstatic", interactive=False, verbosity=0, stderr=err
+                )
+
+    def test_template_literal_with_variables(self):
+        """Test that template literals with variables raise an appropriate error."""
+        # Create initial static files.
+        file_contents = (("dynamic_import.js", "import(`./${module_name}`);"),)
+        for filename, content in file_contents:
+            with open(self._get_filename_path(filename), "w") as f:
+                f.write(content)
+
+        with self.modify_settings(STATICFILES_DIRS={"append": self._temp_dir}):
+            finders.get_finder.cache_clear()
+            err = StringIO()
+            # Expect ValueError with message about template literals
+            error_message = (
+                "Found a template literale with a variable: `./${module_name}`"
+            )
+
+            with self.assertRaisesMessage(ValueError, error_message):
                 call_command(
                     "collectstatic", interactive=False, verbosity=0, stderr=err
                 )
