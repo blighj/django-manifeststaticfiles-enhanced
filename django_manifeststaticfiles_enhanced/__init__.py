@@ -5,7 +5,7 @@ Enhanced ManifestStaticFilesStorage for Django with improvements from
 Django tickets: 27929, 21080, 26583, 28200, 34322
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .storage import EnhancedManifestStaticFilesStorage
 

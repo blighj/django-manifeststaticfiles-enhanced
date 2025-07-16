@@ -448,26 +448,33 @@ def find_import_export_strings(file_contents):
     tokens = list(lexer.lex(file_contents))
     # remove all whitespace
     tokens = [token_tuple for token_tuple in tokens if token_tuple[0] != "ws"]
-
     matches = []
 
     def _append_match(token_tuple):
         # we can't support template strings with variables
         if token_tuple[1].startswith("`") and "${" in token_tuple[1]:
-            url = token_tuple[1]
-            message = (
-                f"Found a template literale with a variable: {url} "
-                "Dynamic imports with template literals containing variables "
-                "are not supported as the actual import path cannot be "
-                "determined at build time."
-            )
-            raise ValueError(message)
+            url = token_tuple[1][1:-1].split("?")[0]
+            if "${" in url:
+                print(url)
+                message = (
+                    f"Found a template literal with a variable: {url} "
+                    "Dynamic imports with template literals containing variables "
+                    "are not supported as the actual import path cannot be "
+                    "determined at build time."
+                )
+                raise ValueError(message)
 
         # the lex parser returns the string, with the wrapping quotes, remove them
         matches.append((token_tuple[1][1:-1], token_tuple[2] + 1))
 
     for i, (name, value, _) in enumerate(tokens):
         if name == "keyword" and value == "import":
+            # Check if this is actually a method name
+            # (part of an object access) by looking at the previous token
+            # if it's a . then this is a method name, not an import statement
+            if i > 0 and tokens[i - 1][0] == "punct" and tokens[i - 1][1] == ".":
+                continue
+
             # check for plain import and function imports first
             # import "module-name";
             if i + 1 < len(tokens) and tokens[i + 1][0] == "string":
