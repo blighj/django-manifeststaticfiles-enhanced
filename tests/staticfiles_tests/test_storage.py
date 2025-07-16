@@ -1135,7 +1135,10 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
     def test_template_literal_with_variables(self):
         """Test that template literals with variables raise an appropriate error."""
         # Create initial static files.
-        file_contents = (("dynamic_import.js", "import(`./${module_name}`);"),)
+        file_contents = (
+            ("dynamic_import.js", "import(`./${module_name}`);"),
+            ("module.js", "this"),
+        )
         for filename, content in file_contents:
             with open(self._get_filename_path(filename), "w") as f:
                 f.write(content)
@@ -1144,14 +1147,24 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
             finders.get_finder.cache_clear()
             err = StringIO()
             # Expect ValueError with message about template literals
-            error_message = (
-                "Found a template literale with a variable: `./${module_name}`"
-            )
+            error_message = "Found a template literal with a variable: ./${module_name}"
 
             with self.assertRaisesMessage(ValueError, error_message):
                 call_command(
                     "collectstatic", interactive=False, verbosity=0, stderr=err
                 )
+
+            # Change the contents of the dynamic_import file.
+            # variables in the querystring are okay
+            with open(self._get_filename_path("dynamic_import.js"), "w+b") as f:
+                f.write(b"import(`module.js?t=${Date.now()}`);")
+
+            # a second collectstatic.
+            call_command("collectstatic", interactive=False, verbosity=0, stderr=err)
+            relpath = self.hashed_file_path("test/dynamic_import.js")
+            with storage.staticfiles_storage.open(relpath) as relfile:
+                content = relfile.read()
+                self.assertIn(b"module.9e925e9341b4.js", content)
 
 
 @override_settings(
