@@ -100,7 +100,6 @@ STORAGES = {
 ```
 
 Also available:
- - [max_post_process_passes](https://docs.djangoproject.com/en/5.2/ref/contrib/staticfiles/#django.contrib.staticfiles.storage.ManifestStaticFilesStorage.max_post_process_passes)
  - manifest_name: change the name of the staticfiles.json file
 
 ## Feature Details
@@ -154,6 +153,29 @@ keep_original_files = False
 # Results in: style.abc123.css only
 ```
 
+### Ignoring specific errors
+
+Ignore specific errors during post-processing with the `ignore_errors` option. This is useful when you have third-party libraries that reference non-existent files or use dynamic path construction that can't be properly parsed.
+
+```python
+# settings.py
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "django_manifeststaticfiles_enhanced.storage.EnhancedManifestStaticFilesStorage",
+        "OPTIONS": {
+            "ignore_errors": [
+                # Format: "file_pattern:missing_url_pattern"
+                "vendor/bootstrap/*.css:missing-font.woff",  # Ignore missing font in bootstrap CSS
+                "vendor/es/*.js:*",  # Ignore all missing missing references in vendors ES version
+                "*/*.css:../img/background.png"  # Ignore specific missing image in all CSS files
+            ],
+        },
+    },
+}
+```
+
+Patterns support wildcard matching with `*` to match any number of characters.
+
 ## Running Tests
 
 ```bash
@@ -186,6 +208,11 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the BSD 3-Clause License - the same license as Django.
 
 ## Changelog
+
+### 0.3.0
+
+- Added `ignore_errors` option to allow ignoring specific file reference errors during post-processing
+- Improved error handling to continue processing when errors are explicitly ignored
 
 ### 0.2.0
 
