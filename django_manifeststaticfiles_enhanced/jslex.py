@@ -443,7 +443,7 @@ def extract_css_urls(css_content):
     return urls
 
 
-def find_import_export_strings(file_contents):
+def find_import_export_strings(file_contents, should_ignore_url=None):
     lexer = JsLexer()
     tokens = list(lexer.lex(file_contents))
     # remove all whitespace
@@ -455,7 +455,8 @@ def find_import_export_strings(file_contents):
         if token_tuple[1].startswith("`") and "${" in token_tuple[1]:
             url = token_tuple[1][1:-1].split("?")[0]
             if "${" in url:
-                print(url)
+                if should_ignore_url(url):
+                    return
                 message = (
                     f"Found a template literal with a variable: {url} "
                     "Dynamic imports with template literals containing variables "

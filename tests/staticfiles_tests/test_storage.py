@@ -1119,6 +1119,10 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
 
                 Please check the URL references in this {ext} file, particularly any
                 relative paths which might be pointing to the wrong location.
+                It is possible to ignore this error by pasing the OPTIONS:
+                {{
+                    "ignore_errors": [{filename}:{url}]
+                }}
                 """
             )
             err_msg = _expected_error_msg.format(
@@ -1126,11 +1130,111 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                 storage=configured_storage._wrapped,
                 filename="test/bar.css",
                 ext="CSS",
+                url="xyz.png",
             )
             with self.assertRaisesMessage(ValueError, err_msg):
                 call_command(
                     "collectstatic", interactive=False, verbosity=0, stderr=err
                 )
+
+            if django.VERSION[:2] in [(4, 2), (5, 0)]:
+                return
+
+            with override_settings(
+                STORAGES={
+                    **settings.STORAGES,
+                    STATICFILES_STORAGE_ALIAS: {
+                        "BACKEND": (
+                            "django_manifeststaticfiles_enhanced.storage."
+                            "EnhancedManifestStaticFilesStorage"
+                        ),
+                        "OPTIONS": {
+                            "ignore_errors": ["test/bar.css:xyz.png"],
+                        },
+                    },
+                }
+            ):
+                call_command(
+                    "collectstatic", interactive=False, verbosity=0, stderr=err
+                )
+                relpath = self.hashed_file_path("test/bar.css")
+                with storage.staticfiles_storage.open(relpath) as relfile:
+                    content = relfile.read()
+                    self.assertIn(b"xyz.png", content)
+
+            with override_settings(
+                STORAGES={
+                    **settings.STORAGES,
+                    STATICFILES_STORAGE_ALIAS: {
+                        "BACKEND": (
+                            "django_manifeststaticfiles_enhanced.storage."
+                            "EnhancedManifestStaticFilesStorage"
+                        ),
+                        "OPTIONS": {
+                            "ignore_errors": ["*:xyz.png"],
+                        },
+                    },
+                }
+            ):
+                call_command(
+                    "collectstatic", interactive=False, verbosity=0, stderr=err
+                )
+                relpath = self.hashed_file_path("test/bar.css")
+                with storage.staticfiles_storage.open(relpath) as relfile:
+                    content = relfile.read()
+                    self.assertIn(b"xyz.png", content)
+
+            with override_settings(
+                STORAGES={
+                    **settings.STORAGES,
+                    STATICFILES_STORAGE_ALIAS: {
+                        "BACKEND": (
+                            "django_manifeststaticfiles_enhanced.storage."
+                            "EnhancedManifestStaticFilesStorage"
+                        ),
+                        "OPTIONS": {
+                            "ignore_errors": ["*:*.png"],
+                        },
+                    },
+                }
+            ):
+                call_command(
+                    "collectstatic", interactive=False, verbosity=0, stderr=err
+                )
+                relpath = self.hashed_file_path("test/bar.css")
+                with storage.staticfiles_storage.open(relpath) as relfile:
+                    content = relfile.read()
+                    self.assertIn(b"xyz.png", content)
+                    self.assertIn(b"foo.acbd18db4cc2.png", content)
+            # Change the contents of the dynamic_import file.
+            # variables in the querystring are okay
+            with open(self._get_filename_path("bar.css"), "w+b") as f:
+                f.write(
+                    b'div{background:url("foo.png");}'
+                    b'span{background:url("/static/test/xyz.png");}'
+                )
+            with override_settings(
+                STORAGES={
+                    **settings.STORAGES,
+                    STATICFILES_STORAGE_ALIAS: {
+                        "BACKEND": (
+                            "django_manifeststaticfiles_enhanced.storage."
+                            "EnhancedManifestStaticFilesStorage"
+                        ),
+                        "OPTIONS": {
+                            "ignore_errors": [" test/bar.css : /static/test/xyz.png "],
+                        },
+                    },
+                }
+            ):
+                call_command(
+                    "collectstatic", interactive=False, verbosity=0, stderr=err
+                )
+                relpath = self.hashed_file_path("test/bar.css")
+                with storage.staticfiles_storage.open(relpath) as relfile:
+                    content = relfile.read()
+                    self.assertIn(b"/static/test/xyz.png", content)
+                    self.assertIn(b"foo.acbd18db4cc2.png", content)
 
     def test_template_literal_with_variables(self):
         """Test that template literals with variables raise an appropriate error."""
@@ -1153,6 +1257,31 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                 call_command(
                     "collectstatic", interactive=False, verbosity=0, stderr=err
                 )
+
+            if django.VERSION[:2] not in [(4, 2), (5, 0)]:
+                with override_settings(
+                    STORAGES={
+                        **settings.STORAGES,
+                        STATICFILES_STORAGE_ALIAS: {
+                            "BACKEND": (
+                                "django_manifeststaticfiles_enhanced.storage."
+                                "EnhancedManifestStaticFilesStorage"
+                            ),
+                            "OPTIONS": {
+                                "ignore_errors": [
+                                    "test/dynamic_import.js:./${module_name}"
+                                ],
+                            },
+                        },
+                    }
+                ):
+                    call_command(
+                        "collectstatic", interactive=False, verbosity=0, stderr=err
+                    )
+                    relpath = self.hashed_file_path("test/dynamic_import.js")
+                    with storage.staticfiles_storage.open(relpath) as relfile:
+                        content = relfile.read()
+                        self.assertIn(b"./${module_name}", content)
 
             # Change the contents of the dynamic_import file.
             # variables in the querystring are okay

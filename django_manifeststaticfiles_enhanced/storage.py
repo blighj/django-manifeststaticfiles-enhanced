@@ -190,17 +190,23 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                     path, ("*.js",)
                 ):
                     try:
-                        for url_name, position in find_import_export_strings(content):
-                            if self._should_adjust_url(url_name):
-                                target = self._get_target_name(url_name, name)
-                                dependencies.add(target)
-                                url_positions.append((url_name, position))
+                        urls = find_import_export_strings(
+                            content,
+                            should_ignore_url=lambda url: self._should_ignore_url(
+                                name, url
+                            ),
+                        )
                     except ValueError as e:
                         message = e.args[0] if len(e.args) else ""
                         message = (
                             f"The js file '{name}' could not be processed.\n{message}"
                         )
                         raise ValueError(message)
+                    for url_name, position in urls:
+                        if self._should_adjust_url(url_name):
+                            target = self._get_target_name(url_name, name)
+                            dependencies.add(target)
+                            url_positions.append((url_name, position))
 
                 # Check for sourceMappingURL
                 if "sourceMappingURL" in content:
@@ -313,7 +319,16 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             # Add content before this URL
             result_parts.append(content[last_position:position])
 
-            transformed_url = self._adjust_url(url, name, hashed_files)
+            try:
+                transformed_url = self._adjust_url(url, name, hashed_files)
+            except ValueError as exc:
+                if self._should_ignore_url(name, url):
+                    transformed_url = url
+                else:
+                    message = exc.args[0] if len(exc.args) else ""
+                    message = f"Error processing the url {url}\n{message}"
+                    raise ValueError(message)
+
             result_parts.append(transformed_url)
             last_position = position + len(url)
 
@@ -327,76 +342,69 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         """
         storage, path = storage_and_path
 
-        try:
-            with storage.open(path) as original_file:
-                # Calculate hash of original file
-                if hasattr(original_file, "seek"):
-                    original_file.seek(0)
+        with storage.open(path) as original_file:
+            # Calculate hash of original file
+            if hasattr(original_file, "seek"):
+                original_file.seek(0)
 
-                hashed_name = self.hashed_name(name, original_file)
-                hashed_file_exists = self.exists(hashed_name)
-                processed = False
+            hashed_name = self.hashed_name(name, original_file)
+            hashed_file_exists = self.exists(hashed_name)
+            processed = False
 
-                # If this is an adjustable file with URL positions,
-                # apply transformations
-                if name in graph and graph[name]["needs_adjustment"]:
-                    try:
-                        if hasattr(original_file, "seek"):
-                            original_file.seek(0)
-
-                        content = original_file.read().decode("utf-8")
-
-                        # Apply URL substitutions using stored positions
-                        content = self._process_file_content(
-                            name, content, graph[name]["url_positions"], hashed_files
-                        )
-
-                        # Create a content file and calculate its hash
-                        content_file = ContentFile(content.encode())
-                        new_hashed_name = self.hashed_name(name, content_file)
-
-                        # Handle file saving logic
-                        if hashed_file_exists and not self.keep_intermediate_files:
-                            self.delete(hashed_name)
-                        elif self.keep_intermediate_files and not hashed_file_exists:
-                            # Save original hashed file for reference if needed
-                            self._save(hashed_name, content_file)
-
-                        if (
-                            not self.exists(new_hashed_name)
-                            or hashed_name != new_hashed_name
-                        ):
-                            if self.exists(new_hashed_name):
-                                self.delete(new_hashed_name)
-                            saved_name = self._save(new_hashed_name, content_file)
-                            hashed_name = self.clean_name(saved_name)
-                        else:
-                            hashed_name = new_hashed_name
-
-                        processed = True
-
-                    except UnicodeDecodeError as exc:
-                        # Re-raise UnicodeDecodeError to match previous behavior
-                        return name, None, exc
-                    except ValueError as exc:
-                        exc = self._make_helpful_exception(exc, name)
-                        # Re-raise ValueError to match previous behavior
-                        return name, None, exc
-
-                elif not processed and not hashed_file_exists:
-                    # For non-adjustable files or when processing fails,
-                    # just copy the file
+            # If this is an adjustable file with URL positions,
+            # apply transformations
+            if name in graph and graph[name]["needs_adjustment"]:
+                try:
                     if hasattr(original_file, "seek"):
                         original_file.seek(0)
+
+                    content = original_file.read().decode("utf-8")
+
+                    # Apply URL substitutions using stored positions
+                    content = self._process_file_content(
+                        name, content, graph[name]["url_positions"], hashed_files
+                    )
+
+                    # Create a content file and calculate its hash
+                    content_file = ContentFile(content.encode())
+                    new_hashed_name = self.hashed_name(name, content_file)
+
+                    # Handle file saving logic
+                    if hashed_file_exists and not self.keep_intermediate_files:
+                        self.delete(hashed_name)
+                    elif self.keep_intermediate_files and not hashed_file_exists:
+                        # Save original hashed file for reference if needed
+                        self._save(hashed_name, content_file)
+
+                    if (
+                        not self.exists(new_hashed_name)
+                        or hashed_name != new_hashed_name
+                    ):
+                        if self.exists(new_hashed_name):
+                            self.delete(new_hashed_name)
+                        saved_name = self._save(new_hashed_name, content_file)
+                        hashed_name = self.clean_name(saved_name)
+                    else:
+                        hashed_name = new_hashed_name
+
                     processed = True
-                    saved_name = self._save(hashed_name, original_file)
-                    hashed_name = self.clean_name(saved_name)
 
-                return name, hashed_name, processed
+                except UnicodeDecodeError as exc:
+                    return name, None, exc
+                except ValueError as exc:
+                    exc = self._make_helpful_exception(exc, name)
+                    return name, None, exc
 
-        except Exception as exc:
-            # Re-raise exceptions to match previous behavior
-            return name, None, exc
+            elif not processed and not hashed_file_exists:
+                # For non-adjustable files or when processing fails,
+                # just copy the file
+                if hasattr(original_file, "seek"):
+                    original_file.seek(0)
+                processed = True
+                saved_name = self._save(hashed_name, original_file)
+                hashed_name = self.clean_name(saved_name)
+
+            return name, hashed_name, processed
 
     def _process_with_dependency_graph(self, paths, dry_run=False, **options):
         """
@@ -451,13 +459,16 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             message = self._error_msg.format(
                 orig_message=message,
                 filename=name,
-                missing=match.group(1),
+                missing=match.group(2),
                 ext=extension,
+                url=match.group(1),
             )
             exception = ValueError(message)
         return exception
 
-    _error_msg_re = re.compile(r"^The file '(.+)' could not be found")
+    _error_msg_re = re.compile(
+        r"^Error processing the url (.+)\nThe file '(.+)' could not be found"
+    )
 
     _error_msg = textwrap.dedent(
         """\
@@ -468,8 +479,62 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
         Please check the URL references in this {ext} file, particularly any
         relative paths which might be pointing to the wrong location.
+        It is possible to ignore this error by pasing the OPTIONS:
+        {{
+            "ignore_errors": [{filename}:{url}]
+        }}
         """
     )
+
+    def _should_ignore_url(self, filename, url):
+        """
+        Check if the error for this file should be ignored
+        based on the ignore_errors setting.
+
+        Format for ignore_errors entries: "file:url" where:
+        - 'file' is the filename pattern (can use * as wildcard)
+        - 'url' is the missing url pattern (can use * as wildcard)
+        """
+        # Check if any ignore pattern matches
+        for pattern in self.ignore_errors:
+            try:
+                if ":" not in pattern:
+                    continue
+
+                file_pattern, url_pattern = pattern.split(":", 1)
+
+                # Convert glob patterns to regex patterns
+                file_regex = self._glob_to_regex(file_pattern.strip())
+                url_regex = self._glob_to_regex(url_pattern.strip())
+
+                # Check if both the file and URL match their patterns
+                if re.match(file_regex, filename) and re.match(url_regex, url):
+                    return True
+            except Exception:
+                # If pattern matching fails, continue with the next pattern
+                continue
+
+        return False
+
+    def _glob_to_regex(self, pattern):
+        """
+        Convert a glob pattern to a regex pattern.
+        """
+        regex = ""
+        i, n = 0, len(pattern)
+
+        while i < n:
+            c = pattern[i]
+            i += 1
+
+            if c == "*":
+                regex += ".*"
+            elif c in ".$^+[](){}|\\":
+                regex += "\\" + c
+            else:
+                regex += c
+
+        return "^" + regex + "$"
 
 
 class EnhancedManifestFilesMixin(EnhancedHashedFilesMixin, ManifestFilesMixin):
@@ -516,6 +581,7 @@ class EnhancedManifestStaticFilesStorage(
     - ticket_27929: keep_original_files option
     - ticket_28200: Optimized storage to avoid unnecessary file operations
     - ticket_34322: JsLex for ES module support
+    - ignore_errors: List of 'file:url' errors to ignore during post-processing
     """
 
     def __init__(
@@ -528,6 +594,7 @@ class EnhancedManifestStaticFilesStorage(
         manifest_strict=None,
         keep_intermediate_files=None,
         keep_original_files=None,
+        ignore_errors=None,
         *args,
         **kwargs,
     ):
@@ -552,6 +619,10 @@ class EnhancedManifestStaticFilesStorage(
             self.keep_intermediate_files = keep_intermediate_files
         if keep_original_files is not None:
             self.keep_original_files = keep_original_files
+        if ignore_errors is not None:
+            self.ignore_errors = ignore_errors
+        else:
+            self.ignore_errors = []
 
         super().__init__(location, base_url, *args, **kwargs)
 
@@ -600,6 +671,7 @@ class EnhancedManifestStaticFilesStorage(
             "manifest_strict": "manifest_strict",
             "keep_intermediate_files": "keep_intermediate_files",
             "keep_original_files": "keep_original_files",
+            "ignore_errors": "ignore_errors",
         }
 
         for kwarg_name, attr_name in option_mapping.items():
