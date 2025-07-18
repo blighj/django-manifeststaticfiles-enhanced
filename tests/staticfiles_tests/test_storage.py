@@ -200,22 +200,19 @@ class TestHashedFiles:
             self.assertIn(b"https://", relfile.read())
         self.assertPostCondition()
 
-    @unittest.skipIf(
-        django.VERSION < (5, 2),
-        "Import loop detection functionality only available in Django 5.2+",
-    )
-    @override_settings(
-        STATICFILES_DIRS=[os.path.join(TEST_ROOT, "project", "loop")],
-        STATICFILES_FINDERS=["django.contrib.staticfiles.finders.FileSystemFinder"],
-    )
     def test_import_loop(self):
-        finders.get_finder.cache_clear()
-        err = StringIO()
-        with self.assertRaisesMessage(RuntimeError, "Max post-process passes exceeded"):
-            call_command("collectstatic", interactive=False, verbosity=0, stderr=err)
-        self.assertEqual(
-            "Post-processing 'bar.css, foo.css' failed!\n\n", err.getvalue()
-        )
+        relpath = self.hashed_file_path("loop/bar.css")
+        self.assertEqual(relpath, "loop/bar.0dff9359c324.css")
+        with storage.staticfiles_storage.open(relpath) as relfile:
+            content = relfile.read()
+            self.assertIn(b"foo.0dff9359c324.css", content)
+            self.assertIn(b"baz.f67a7bd3d4b0.css", content)
+
+        relpath = self.hashed_file_path("loop/foo.css")
+        self.assertEqual(relpath, "loop/foo.0dff9359c324.css")
+        with storage.staticfiles_storage.open(relpath) as relfile:
+            content = relfile.read()
+            self.assertIn(b"bar.0dff9359c324.css", content)
         self.assertPostCondition()
 
     def test_post_processing(self):
@@ -1294,6 +1291,92 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
             with storage.staticfiles_storage.open(relpath) as relfile:
                 content = relfile.read()
                 self.assertIn(b"module.9e925e9341b4.js", content)
+
+    def test_circular_dependencies(self):
+        """
+        Test handling of circular dependencies between CSS files with changes
+        """
+        # Create initial static files with circular dependencies
+        file_contents = (
+            ("style1.css", "@import url('style2.css');\n.style1 { color: red; }"),
+            (
+                "style2.css",
+                "@import url('style1.css');\n@import url('common.css');\n"
+                ".style2 { color: blue; }",
+            ),
+            ("common.css", ".common { color: green; }"),
+        )
+
+        for filename, content in file_contents:
+            with open(self._get_filename_path(filename), "w") as f:
+                f.write(content)
+
+        with self.modify_settings(STATICFILES_DIRS={"append": self._temp_dir}):
+            finders.get_finder.cache_clear()
+            err = StringIO()
+
+            call_command("collectstatic", interactive=False, verbosity=0, stderr=err)
+
+            # Get the hashed paths for the files
+            style1_path = self.hashed_file_path("test/style1.css")
+            style2_path = self.hashed_file_path("test/style2.css")
+            common_path = self.hashed_file_path("test/common.css")
+
+            # Extract hash parts from the filenames
+            style1_hash = style1_path.split(".")[-2]
+            style2_hash = style2_path.split(".")[-2]
+            common_hash = common_path.split(".")[-2]
+
+            # 1. Verify that style1.css and style2.css have the same hash
+            self.assertEqual(
+                style1_hash,
+                style2_hash,
+                "Files with circular dependencies should have the same hash",
+            )
+
+            # 2. style1.css references the hashed version of style2.css
+            with storage.staticfiles_storage.open(style1_path) as relfile:
+                content = relfile.read()
+                self.assertIn(f"style2.{style2_hash}.css".encode(), content)
+
+            # 3. style2.css references the hashed versions style1 & common.css
+            with storage.staticfiles_storage.open(style2_path) as relfile:
+                content = relfile.read()
+                self.assertIn(f"style1.{style1_hash}.css".encode(), content)
+
+                # 4. style2.css correctly references common.css
+                self.assertIn(f"common.{common_hash}.css".encode(), content)
+
+            # Update the content of common.css
+            with open(self._get_filename_path("common.css"), "w+b") as f:
+                f.write(b".common { color: black; }")
+
+            # a second collectstatic.
+            call_command("collectstatic", interactive=False, verbosity=0, stderr=err)
+            style1_path = self.hashed_file_path("test/style1.css")
+            style2_path = self.hashed_file_path("test/style2.css")
+            common_path = self.hashed_file_path("test/common.css")
+
+            style1_hash_changed = style1_path.split(".")[-2]
+            style2_hash_changed = style2_path.split(".")[-2]
+            common_hash_changed = common_path.split(".")[-2]
+
+            # hashes should all have changed
+            self.assertNotEqual(style1_hash, style1_hash_changed)
+            self.assertNotEqual(style2_hash, style2_hash_changed)
+            self.assertNotEqual(common_hash, common_hash_changed)
+
+            with storage.staticfiles_storage.open(style1_path) as relfile:
+                content = relfile.read()
+                self.assertIn(f"style2.{style2_hash_changed}.css".encode(), content)
+
+            # 3. style2.css references the hashed versions style1 & common.css
+            with storage.staticfiles_storage.open(style2_path) as relfile:
+                content = relfile.read()
+                self.assertIn(f"style1.{style1_hash_changed}.css".encode(), content)
+
+                # 4. style2.css correctly references common.css
+                self.assertIn(f"common.{common_hash_changed}.css".encode(), content)
 
 
 @override_settings(

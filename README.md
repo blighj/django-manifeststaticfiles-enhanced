@@ -209,6 +209,10 @@ This project is licensed under the BSD 3-Clause License - the same license as Dj
 
 ## Changelog
 
+### 0.4.0
+
+- Added handling of circular dependencies in js/css files.
+
 ### 0.3.0
 
 - Added `ignore_errors` option to allow ignoring specific file reference errors during post-processing
