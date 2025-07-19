@@ -449,6 +449,105 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         # Store the processed paths
         self.hashed_files.update(hashed_files)
 
+    def _process_circular_dependencies(self, circular_deps, paths, graph, hashed_files):
+        """
+        Process files with circular dependencies.
+
+        This method breaks the dependency cycle by:
+        1. First replacing all non-circular URLs in each file
+        2. Generating a stable hash for the group of circular dependencies
+        3. Using this to create hashed filenames for all files in the cycle
+
+        Args:
+            circular_deps: Dict mapping files to their circular dependencies
+            paths: Dict mapping file paths to (storage, path) tuples
+            graph: Dependency graph built by _build_dependency_graph
+            hashed_files: Dict of already processed files
+        """
+        circular_hashes = {}
+        processed_files = set()
+
+        # First pass: Replace all non-circular dependency URLs in each file
+        processed_contents = {}
+        for name in circular_deps:
+            storage, path = paths[name]
+            with storage.open(path) as original_file:
+                if hasattr(original_file, "seek"):
+                    original_file.seek(0)
+
+                try:
+                    content = original_file.read().decode("utf-8")
+
+                    # Filter URL positions to only non-circular dependencies
+                    non_circular_positions = []
+                    for url, pos in graph[name]["url_positions"]:
+                        target = self._get_target_name(url, name)
+                        if target not in circular_deps:
+                            non_circular_positions.append((url, pos))
+
+                    # Replace all non-circular URLs first
+                    if non_circular_positions:
+                        content = self._process_file_content(
+                            name, content, non_circular_positions, hashed_files
+                        )
+
+                    # Store the processed content for the second pass
+                    # We haven't actually saved these changes to disk
+                    processed_contents[name] = content
+
+                except UnicodeDecodeError as exc:
+                    yield name, None, exc
+                    continue
+                except ValueError as exc:
+                    exc = self._make_helpful_exception(exc, name)
+                    yield name, None, exc
+                    continue
+
+        # Calculate a stable hash for all circular dependencies combined
+        combined_content = "".join(
+            processed_contents[name] for name in sorted(circular_deps)
+        )
+        group_hash = hashlib.md5(combined_content.encode()).hexdigest()[:12]
+
+        # Second pass: Create hashed filenames using the group hash
+        for name in circular_deps:
+            if name in processed_files:
+                continue
+
+            # Generate a hashed filename based on the group hash
+            filename, ext = os.path.splitext(name)
+            hashed_name = f"{filename}.{group_hash}{ext}"
+
+            # Store the hash for this file
+            hash_key = self.hash_key(self.clean_name(name))
+            circular_hashes[hash_key] = hashed_name
+            processed_files.add(name)
+
+        # Third pass: Process all URLs (including circular ones) and save files
+        for name in circular_deps:
+            try:
+                content = processed_contents[name]
+
+                combined_hashes = {**hashed_files, **circular_hashes}
+                content = self._process_file_content(
+                    name, content, graph[name]["url_positions"], combined_hashes
+                )
+
+                # Get the hashed name for this file
+                hash_key = self.hash_key(self.clean_name(name))
+                hashed_name = circular_hashes[hash_key]
+
+                # Save the processed content to the hashed filename
+                content_file = ContentFile(content.encode())
+                if self.exists(hashed_name):
+                    self.delete(hashed_name)
+                self._save(hashed_name, content_file)
+                yield name, hashed_name, True
+
+            except ValueError as exc:
+                exc = self._make_helpful_exception(exc, name)
+                yield name, None, exc
+
     def _make_helpful_exception(self, exception, name):
         """
         The ValueError for missing files, such as images/fonts in css, sourcemaps,
@@ -608,8 +707,6 @@ class EnhancedManifestStaticFilesStorage(
             self._recover_options_from_storages(kwargs)
 
         # Set configurable attributes as instance attributes if provided
-        if max_post_process_passes is not None:
-            self.max_post_process_passes = max_post_process_passes
         if support_js_module_import_aggregation is not None:
             self.support_js_module_import_aggregation = (
                 support_js_module_import_aggregation
@@ -627,105 +724,6 @@ class EnhancedManifestStaticFilesStorage(
         else:
             self.ignore_errors = []
         super().__init__(location, base_url, *args, **kwargs)
-
-    def _process_circular_dependencies(self, circular_deps, paths, graph, hashed_files):
-        """
-        Process files with circular dependencies.
-
-        This method breaks the dependency cycle by:
-        1. First replacing all non-circular URLs in each file
-        2. Generating a stable hash for the group of circular dependencies
-        3. Using this to create hashed filenames for all files in the cycle
-
-        Args:
-            circular_deps: Dict mapping files to their circular dependencies
-            paths: Dict mapping file paths to (storage, path) tuples
-            graph: Dependency graph built by _build_dependency_graph
-            hashed_files: Dict of already processed files
-        """
-        circular_hashes = {}
-        processed_files = set()
-
-        # First pass: Replace all non-circular dependency URLs in each file
-        processed_contents = {}
-        for name in circular_deps:
-            storage, path = paths[name]
-            with storage.open(path) as original_file:
-                if hasattr(original_file, "seek"):
-                    original_file.seek(0)
-
-                try:
-                    content = original_file.read().decode("utf-8")
-
-                    # Filter URL positions to only non-circular dependencies
-                    non_circular_positions = []
-                    for url, pos in graph[name]["url_positions"]:
-                        target = self._get_target_name(url, name)
-                        if target not in circular_deps:
-                            non_circular_positions.append((url, pos))
-
-                    # Replace all non-circular URLs first
-                    if non_circular_positions:
-                        content = self._process_file_content(
-                            name, content, non_circular_positions, hashed_files
-                        )
-
-                    # Store the processed content for the second pass
-                    # We haven't actually saved these changes to disk
-                    processed_contents[name] = content
-
-                except UnicodeDecodeError as exc:
-                    yield name, None, exc
-                    continue
-                except ValueError as exc:
-                    exc = self._make_helpful_exception(exc, name)
-                    yield name, None, exc
-                    continue
-
-        # Calculate a stable hash for all circular dependencies combined
-        combined_content = "".join(
-            processed_contents[name] for name in sorted(circular_deps)
-        )
-        group_hash = hashlib.md5(combined_content.encode()).hexdigest()[:12]
-
-        # Second pass: Create hashed filenames using the group hash
-        for name in circular_deps:
-            if name in processed_files:
-                continue
-
-            # Generate a hashed filename based on the group hash
-            filename, ext = os.path.splitext(name)
-            hashed_name = f"{filename}.{group_hash}{ext}"
-
-            # Store the hash for this file
-            hash_key = self.hash_key(self.clean_name(name))
-            circular_hashes[hash_key] = hashed_name
-            processed_files.add(name)
-
-        # Third pass: Process all URLs (including circular ones) and save files
-        for name in circular_deps:
-            try:
-                content = processed_contents[name]
-
-                combined_hashes = {**hashed_files, **circular_hashes}
-                content = self._process_file_content(
-                    name, content, graph[name]["url_positions"], combined_hashes
-                )
-
-                # Get the hashed name for this file
-                hash_key = self.hash_key(self.clean_name(name))
-                hashed_name = circular_hashes[hash_key]
-
-                # Save the processed content to the hashed filename
-                content_file = ContentFile(content.encode())
-                if self.exists(hashed_name):
-                    self.delete(hashed_name)
-                self._save(hashed_name, content_file)
-                yield name, hashed_name, True
-
-            except ValueError as exc:
-                exc = self._make_helpful_exception(exc, name)
-                yield name, None, exc
 
     def _recover_options_from_storages(self, kwargs):
         """
