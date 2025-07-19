@@ -22,6 +22,13 @@ from django_manifeststaticfiles_enhanced.jslex import (
 )
 
 
+class ProcessingException(Exception):
+    def __init__(self, e, file_name):
+        self.file_name = file_name
+        self.original_exception = e
+        super().__init__(e.args[0] if len(e.args) else "")
+
+
 class EnhancedHashedFilesMixin(HashedFilesMixin):
     support_js_module_import_aggregation = True
 
@@ -38,84 +45,53 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         # Process files using the dependency graph
         yield from self._process_with_dependency_graph(paths, dry_run, **options)
 
-    def _should_adjust_url(self, url):
+    def _process_with_dependency_graph(self, paths, dry_run=False, **options):
         """
-        Return whether this is a url that should be adjusted
+        Process static files using a unified dependency graph approach.
         """
-        # Ignore absolute/protocol-relative and data-uri URLs.
-        if re.match(r"^[a-z]+:", url) or url.startswith("//"):
-            return False
+        if dry_run:
+            return
 
-        # Ignore absolute URLs that don't point to a static file (dynamic
-        # CSS / JS?). Note that STATIC_URL cannot be empty.
-        if url.startswith("/") and not url.startswith(settings.STATIC_URL):
-            return False
+        # Build the dependency graph
+        adjustable_paths = [
+            path for path in paths if matches_patterns(path, self._patterns)
+        ]
 
-        # Strip off the fragment so a path-like fragment won't interfere.
-        url_path, _ = urldefrag(url)
+        graph, non_adjustable = self._build_dependency_graph(paths, adjustable_paths)
 
-        # Ignore URLs without a path
-        if not url_path:
-            return False
-        return True
+        # Dictionary to store hashed file names
+        hashed_files = {}
 
-    def _adjust_url(self, url, name, hashed_files):
-        """
-        Return the hashed url without affecting fragments
-        """
-        # Strip off the fragment so a path-like fragment won't interfere.
-        url_path, fragment = urldefrag(url)
+        # Sort files in dependency order
+        linear_deps, circular_deps = self._topological_sort(graph, non_adjustable)
 
-        if url_path.startswith("/"):
-            # _should_adjust_url would have checked this.
-            assert url_path.startswith(settings.STATIC_URL)
-            target_name = url_path[len(settings.STATIC_URL) :]
-        else:
-            # We're using the posixpath module to mix paths and URLs conveniently.
-            source_name = name if os.sep == "/" else name.replace(os.sep, "/")
-            target_name = posixpath.join(posixpath.dirname(source_name), url_path)
+        try:
+            # First process non-adjustable files and linear dependencies
+            for name in list(non_adjustable) + linear_deps:
+                name, hashed_name, processed = self._process_file(
+                    name, paths[name], hashed_files, graph=graph
+                )
+                if processed:
+                    hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
+                    yield name, hashed_name, processed
 
-        # Determine the hashed name of the target file with the storage backend.
-        hashed_url = self._url(
-            self._stored_name,
-            unquote(target_name),
-            force=True,
-            hashed_files=hashed_files,
-        )
+            # Handle circular dependencies
+            if circular_deps:
+                circular_hashes = self._process_circular_dependencies(
+                    circular_deps, paths, graph, hashed_files
+                )
+                for name, hashed_name, processed in circular_hashes:
+                    if processed:
+                        hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
+                        yield name, hashed_name, processed
 
-        # Ensure hashed_url is a string (handle mock objects in tests)
-        if hasattr(hashed_url, "__str__"):
-            hashed_url = str(hashed_url)
+        except ProcessingException as exc:
+            # django's collectstatic management command is written to expect
+            # the exception to be returned in this format
+            yield exc.file_name, None, exc.original_exception
 
-        transformed_url = "/".join(
-            url_path.split("/")[:-1] + hashed_url.split("/")[-1:]
-        )
-
-        # Restore the fragment that was stripped off earlier.
-        if fragment:
-            transformed_url += ("?#" if "?#" in url else "#") + fragment
-
-        # Ensure we return a string (handle mock objects in tests)
-        return str(transformed_url)
-
-    def _get_target_name(self, url, source_name):
-        """
-        Get the target file name from a URL and source file name
-        """
-        url_path, _ = urldefrag(url)
-
-        if url_path.startswith("/"):
-            # Otherwise the condition above would have returned prematurely.
-            assert url_path.startswith(settings.STATIC_URL)
-            target_name = url_path[len(settings.STATIC_URL) :]
-        else:
-            # We're using the posixpath module to mix paths and URLs conveniently.
-            source_name = (
-                source_name if os.sep == "/" else source_name.replace(os.sep, "/")
-            )
-            target_name = posixpath.join(posixpath.dirname(source_name), url_path)
-
-        return posixpath.normpath(target_name)
+        # Store the processed paths
+        self.hashed_files.update(hashed_files)
 
     def _build_dependency_graph(self, paths, adjustable_paths):
         """
@@ -237,6 +213,84 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
         return graph, non_adjustable
 
+    def _should_adjust_url(self, url):
+        """
+        Return whether this is a url that should be adjusted
+        """
+        # Ignore absolute/protocol-relative and data-uri URLs.
+        if re.match(r"^[a-z]+:", url) or url.startswith("//"):
+            return False
+
+        # Ignore absolute URLs that don't point to a static file (dynamic
+        # CSS / JS?). Note that STATIC_URL cannot be empty.
+        if url.startswith("/") and not url.startswith(settings.STATIC_URL):
+            return False
+
+        # Strip off the fragment so a path-like fragment won't interfere.
+        url_path, _ = urldefrag(url)
+
+        # Ignore URLs without a path
+        if not url_path:
+            return False
+        return True
+
+    def _adjust_url(self, url, name, hashed_files):
+        """
+        Return the hashed url without affecting fragments
+        """
+        # Strip off the fragment so a path-like fragment won't interfere.
+        url_path, fragment = urldefrag(url)
+
+        # determine the target file name (remove /static if needed)
+        target_name = self._get_base_target_name(url_path, name)
+
+        # Determine the hashed name of the target file with the storage backend.
+        hashed_url = self._url(
+            self._stored_name,
+            unquote(target_name),
+            force=True,
+            hashed_files=hashed_files,
+        )
+
+        # Ensure hashed_url is a string (handle mock objects in tests)
+        if hasattr(hashed_url, "__str__"):
+            hashed_url = str(hashed_url)
+
+        transformed_url = "/".join(
+            url_path.split("/")[:-1] + hashed_url.split("/")[-1:]
+        )
+
+        # Restore the fragment that was stripped off earlier.
+        if fragment:
+            transformed_url += ("?#" if "?#" in url else "#") + fragment
+
+        # Ensure we return a string (handle mock objects in tests)
+        return str(transformed_url)
+
+    def _get_target_name(self, url, source_name):
+        """
+        Get the target file name from a URL and source file name
+        """
+        url_path, _ = urldefrag(url)
+        return posixpath.normpath(self._get_base_target_name(url_path, source_name))
+
+    def _get_base_target_name(self, url_path, source_name):
+        """
+        Get the target file name from a URL (no fragment) and source file name
+        """
+        # Used by _get_target_name and _adjust_url
+        if url_path.startswith("/"):
+            # Otherwise the condition above would have returned prematurely.
+            assert url_path.startswith(settings.STATIC_URL)
+            target_name = url_path[len(settings.STATIC_URL) :]
+        else:
+            # We're using the posixpath module to mix paths and URLs conveniently.
+            source_name = (
+                source_name if os.sep == "/" else source_name.replace(os.sep, "/")
+            )
+            target_name = posixpath.join(posixpath.dirname(source_name), url_path)
+        return target_name
+
     def _topological_sort(self, graph, non_adjustable):
         """
         Sort the files in dependency order using Kahn's algorithm.
@@ -298,45 +352,6 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
         return result, circular
 
-    def _process_file_content(self, name, content, url_positions, hashed_files):
-        """
-        Process file content by substituting URLs.
-        url_positions is a list of (url, position) tuples.
-        """
-        if not url_positions:
-            return content
-
-        result_parts = []
-        last_position = 0
-
-        # Sort by position to ensure correct order
-        sorted_positions = sorted(
-            url_positions,
-            key=lambda x: x[1],
-        )
-
-        for url, pos in sorted_positions:
-            position = pos
-            # Add content before this URL
-            result_parts.append(content[last_position:position])
-
-            try:
-                transformed_url = self._adjust_url(url, name, hashed_files)
-            except ValueError as exc:
-                if self._should_ignore_url(name, url):
-                    transformed_url = url
-                else:
-                    message = exc.args[0] if len(exc.args) else ""
-                    message = f"Error processing the url {url}\n{message}"
-                    raise ValueError(message)
-
-            result_parts.append(transformed_url)
-            last_position = position + len(url)
-
-        # Add remaining content
-        result_parts.append(content[last_position:])
-        return "".join(result_parts)
-
     def _process_file(self, name, storage_and_path, hashed_files, graph):
         """
         Process a single file using the unified graph structure.
@@ -391,10 +406,10 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                     processed = True
 
                 except UnicodeDecodeError as exc:
-                    return name, None, exc
+                    raise ProcessingException(exc, name)
                 except ValueError as exc:
                     exc = self._make_helpful_exception(exc, name)
-                    return name, None, exc
+                    raise ProcessingException(exc, name)
 
             elif not processed and not hashed_file_exists:
                 # For non-adjustable files or when processing fails,
@@ -407,47 +422,44 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
             return name, hashed_name, processed
 
-    def _process_with_dependency_graph(self, paths, dry_run=False, **options):
+    def _process_file_content(self, name, content, url_positions, hashed_files):
         """
-        Process static files using a unified dependency graph approach.
+        Process file content by substituting URLs.
+        url_positions is a list of (url, position) tuples.
         """
-        if dry_run:
-            return
+        if not url_positions:
+            return content
 
-        # Build the dependency graph
-        adjustable_paths = [
-            path for path in paths if matches_patterns(path, self._patterns)
-        ]
+        result_parts = []
+        last_position = 0
 
-        graph, non_adjustable = self._build_dependency_graph(paths, adjustable_paths)
+        # Sort by position to ensure correct order
+        sorted_positions = sorted(
+            url_positions,
+            key=lambda x: x[1],
+        )
 
-        # Dictionary to store hashed file names
-        hashed_files = {}
+        for url, pos in sorted_positions:
+            position = pos
+            # Add content before this URL
+            result_parts.append(content[last_position:position])
 
-        # Sort files in dependency order
-        linear_deps, circular_deps = self._topological_sort(graph, non_adjustable)
+            try:
+                transformed_url = self._adjust_url(url, name, hashed_files)
+            except ValueError as exc:
+                if self._should_ignore_url(name, url):
+                    transformed_url = url
+                else:
+                    message = exc.args[0] if len(exc.args) else ""
+                    message = f"Error processing the url {url}\n{message}"
+                    raise ValueError(message)
 
-        # First process non-adjustable files and linear dependencies
-        for name in list(non_adjustable) + linear_deps:
-            result = self._process_file(name, paths[name], hashed_files, graph=graph)
-            if result:
-                name, hashed_name, processed = result
-                if processed:
-                    hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
-                    yield name, hashed_name, processed
+            result_parts.append(transformed_url)
+            last_position = position + len(url)
 
-        # Handle circular dependencies
-        if circular_deps:
-            circular_hashes = self._process_circular_dependencies(
-                circular_deps, paths, graph, hashed_files
-            )
-            for name, hashed_name, processed in circular_hashes:
-                if processed:
-                    hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
-                    yield name, hashed_name, processed
-
-        # Store the processed paths
-        self.hashed_files.update(hashed_files)
+        # Add remaining content
+        result_parts.append(content[last_position:])
+        return "".join(result_parts)
 
     def _process_circular_dependencies(self, circular_deps, paths, graph, hashed_files):
         """
@@ -468,46 +480,9 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         processed_files = set()
 
         # First pass: Replace all non-circular dependency URLs in each file
-        processed_contents = {}
-        for name in circular_deps:
-            storage, path = paths[name]
-            with storage.open(path) as original_file:
-                if hasattr(original_file, "seek"):
-                    original_file.seek(0)
-
-                try:
-                    content = original_file.read().decode("utf-8")
-
-                    # Filter URL positions to only non-circular dependencies
-                    non_circular_positions = []
-                    for url, pos in graph[name]["url_positions"]:
-                        target = self._get_target_name(url, name)
-                        if target not in circular_deps:
-                            non_circular_positions.append((url, pos))
-
-                    # Replace all non-circular URLs first
-                    if non_circular_positions:
-                        content = self._process_file_content(
-                            name, content, non_circular_positions, hashed_files
-                        )
-
-                    # Store the processed content for the second pass
-                    # We haven't actually saved these changes to disk
-                    processed_contents[name] = content
-
-                except UnicodeDecodeError as exc:
-                    yield name, None, exc
-                    continue
-                except ValueError as exc:
-                    exc = self._make_helpful_exception(exc, name)
-                    yield name, None, exc
-                    continue
-
-        # Calculate a stable hash for all circular dependencies combined
-        combined_content = "".join(
-            processed_contents[name] for name in sorted(circular_deps)
+        group_hash, original_contents = self._calculate_combined_hash(
+            circular_deps, paths, graph, hashed_files
         )
-        group_hash = hashlib.md5(combined_content.encode()).hexdigest()[:12]
 
         # Second pass: Create hashed filenames using the group hash
         for name in circular_deps:
@@ -526,7 +501,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         # Third pass: Process all URLs (including circular ones) and save files
         for name in circular_deps:
             try:
-                content = processed_contents[name]
+                content = original_contents[name]
 
                 combined_hashes = {**hashed_files, **circular_hashes}
                 content = self._process_file_content(
@@ -546,7 +521,56 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
             except ValueError as exc:
                 exc = self._make_helpful_exception(exc, name)
-                yield name, None, exc
+                raise ProcessingException(exc, name)
+
+    def _calculate_combined_hash(self, circular_deps, paths, graph, hashed_files):
+        """
+        Return a hash of the combined content from all circular dependencies
+        Replace the non circular URL's before calculating
+
+        Also returns the original content to save opening it twice
+        """
+        original_contents = {}
+        processed_contents = {}
+        for name in circular_deps:
+            storage, path = paths[name]
+            with storage.open(path) as original_file:
+                if hasattr(original_file, "seek"):
+                    original_file.seek(0)
+
+                try:
+                    content = original_file.read().decode("utf-8")
+                    original_contents[name] = content
+
+                    # Filter URL positions to only non-circular dependencies
+                    non_circular_positions = []
+                    for url, pos in graph[name]["url_positions"]:
+                        target = self._get_target_name(url, name)
+                        if target not in circular_deps:
+                            non_circular_positions.append((url, pos))
+
+                    # Replace all non-circular URLs first
+                    if non_circular_positions:
+                        content = self._process_file_content(
+                            name, content, non_circular_positions, hashed_files
+                        )
+
+                    # Store the processed content for the second pass
+                    # We haven't actually saved these changes to disk
+                    processed_contents[name] = content
+
+                except UnicodeDecodeError as exc:
+                    raise ProcessingException(exc, name)
+                except ValueError as exc:
+                    exc = self._make_helpful_exception(exc, name)
+                    raise ProcessingException(exc, name)
+
+        # Calculate a stable hash for all circular dependencies combined
+        combined_content = "".join(
+            processed_contents[name] for name in sorted(circular_deps)
+        )
+        group_hash = hashlib.md5(combined_content.encode()).hexdigest()[:12]
+        return group_hash, original_contents
 
     def _make_helpful_exception(self, exception, name):
         """
@@ -690,7 +714,6 @@ class EnhancedManifestStaticFilesStorage(
         self,
         location=None,
         base_url=None,
-        max_post_process_passes=None,
         support_js_module_import_aggregation=None,
         manifest_name=None,
         manifest_strict=None,
