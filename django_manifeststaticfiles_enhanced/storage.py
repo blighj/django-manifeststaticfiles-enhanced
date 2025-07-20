@@ -385,19 +385,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                     content_file = ContentFile(content.encode())
                     new_hashed_name = self.hashed_name(name, content_file)
 
-                    # Handle file saving logic
-                    if hashed_file_exists and not self.keep_intermediate_files:
-                        self.delete(hashed_name)
-                    elif self.keep_intermediate_files and not hashed_file_exists:
-                        # Save original hashed file for reference if needed
-                        self._save(hashed_name, content_file)
-
-                    if (
-                        not self.exists(new_hashed_name)
-                        or hashed_name != new_hashed_name
-                    ):
-                        if self.exists(new_hashed_name):
-                            self.delete(new_hashed_name)
+                    if not self.exists(new_hashed_name):
                         saved_name = self._save(new_hashed_name, content_file)
                         hashed_name = self.clean_name(saved_name)
                     else:
@@ -411,9 +399,8 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                     exc = self._make_helpful_exception(exc, name)
                     raise ProcessingException(exc, name)
 
-            elif not processed and not hashed_file_exists:
-                # For non-adjustable files or when processing fails,
-                # just copy the file
+            elif not hashed_file_exists:
+                # For non-adjustable files just copy the file
                 if hasattr(original_file, "seek"):
                     original_file.seek(0)
                 processed = True
@@ -467,8 +454,9 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
         This method breaks the dependency cycle by:
         1. First replacing all non-circular URLs in each file
-        2. Generating a stable hash for the group of circular dependencies
-        3. Using this to create hashed filenames for all files in the cycle
+        and generating a hash based on their combined content
+        2. Apply this stable combined hash to each of the files
+        3. Safely updating all the references within the files
 
         Args:
             circular_deps: Dict mapping files to their circular dependencies
@@ -480,6 +468,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         processed_files = set()
 
         # First pass: Replace all non-circular dependency URLs in each file
+        # and generate group hash
         group_hash, original_contents = self._calculate_combined_hash(
             circular_deps, paths, graph, hashed_files
         )
@@ -717,7 +706,6 @@ class EnhancedManifestStaticFilesStorage(
         support_js_module_import_aggregation=None,
         manifest_name=None,
         manifest_strict=None,
-        keep_intermediate_files=None,
         keep_original_files=None,
         ignore_errors=None,
         *args,
@@ -738,8 +726,6 @@ class EnhancedManifestStaticFilesStorage(
             self.manifest_name = manifest_name
         if manifest_strict is not None:
             self.manifest_strict = manifest_strict
-        if keep_intermediate_files is not None:
-            self.keep_intermediate_files = keep_intermediate_files
         if keep_original_files is not None:
             self.keep_original_files = keep_original_files
         if ignore_errors is not None:
@@ -791,7 +777,6 @@ class EnhancedManifestStaticFilesStorage(
             ),
             "manifest_name": "manifest_name",
             "manifest_strict": "manifest_strict",
-            "keep_intermediate_files": "keep_intermediate_files",
             "keep_original_files": "keep_original_files",
             "ignore_errors": "ignore_errors",
         }
