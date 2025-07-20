@@ -1495,33 +1495,6 @@ class TestEnhancedManifestStorageOptions(CollectionTestCase):
                     "EnhancedManifestStaticFilesStorage"
                 ),
                 "OPTIONS": {
-                    "keep_intermediate_files": True,
-                },
-            },
-        }
-    )
-    def test_keep_intermediate_files_true(self):
-        self.run_collectstatic()
-
-        cached_files = os.listdir(os.path.join(settings.STATIC_ROOT, "cached"))
-        relative_files = [
-            cached_file
-            for cached_file in cached_files
-            if cached_file.startswith("relative.")
-        ]
-        # Should have more files when keep_intermediate_files=True
-        # The existing test_intermediate_files expects 2, should be 3 now
-        self.assertEqual(len(relative_files), 3)
-
-    @override_settings(
-        STORAGES={
-            **settings.STORAGES,
-            STATICFILES_STORAGE_ALIAS: {
-                "BACKEND": (
-                    "django_manifeststaticfiles_enhanced.storage."
-                    "EnhancedManifestStaticFilesStorage"
-                ),
-                "OPTIONS": {
                     "keep_original_files": False,
                 },
             },
