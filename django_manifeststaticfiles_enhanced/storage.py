@@ -1,4 +1,3 @@
-import hashlib
 import os
 import posixpath
 import re
@@ -558,7 +557,8 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         combined_content = "".join(
             processed_contents[name] for name in sorted(circular_deps)
         )
-        group_hash = hashlib.md5(combined_content.encode()).hexdigest()[:12]
+        combined_file = ContentFile(combined_content.encode())
+        group_hash = self.file_hash("_combined", combined_file)
         return group_hash, original_contents
 
     def _make_helpful_exception(self, exception, name):
