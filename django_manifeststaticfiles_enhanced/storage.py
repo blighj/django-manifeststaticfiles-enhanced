@@ -78,10 +78,9 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             circular_hashes = self._process_circular_dependencies(
                 circular_deps, paths, graph, hashed_files
             )
-            for name, hashed_name, processed in circular_hashes:
-                if processed:
-                    hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
-                    yield name, hashed_name, processed
+            for name, hashed_name in circular_hashes:
+                hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
+                yield name, hashed_name, True
 
         # Store the processed paths
         self.hashed_files.update(hashed_files)
@@ -501,7 +500,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                 if self.exists(hashed_name):
                     self.delete(hashed_name)
                 self._save(hashed_name, content_file)
-                yield name, hashed_name, True
+                yield name, hashed_name
 
             except ValueError as exc:
                 exc = self._make_helpful_exception(exc, name)
