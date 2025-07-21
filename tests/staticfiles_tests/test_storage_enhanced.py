@@ -150,7 +150,7 @@ class DependencyGraphTest(TestCase):
 
         # Add files that don't need adjustment
         mock_storage.files["img/bg.png"] = b"PNG content"
-        mock_storage.files["base.css"] = b"body { color: black; }"
+        mock_storage.files["css/base.css"] = b"body { color: black; }"
         mock_storage.files["js/components.js"] = b"export class Component {}"
         mock_storage.files["js/library.js.map"] = b'{"version": 3}'
 
@@ -164,17 +164,13 @@ class DependencyGraphTest(TestCase):
             "js/library.js.map": (mock_storage, "js/library.js.map"),
         }
 
-        adjustable_paths = ["css/main.css", "js/app.js", "js/library.js"]
-
         # Patch _should_adjust_url and _get_target_name to simulate expected behavior
         with patch.object(
             self.storage,
             "_should_adjust_url",
             lambda url: True if "." in url else False,
         ):
-            graph, non_adjustable = self.storage._build_dependency_graph(
-                paths, adjustable_paths
-            )
+            graph, non_adjustable = self.storage._build_dependency_graph(paths)
 
             # Check that graph contains all files
             self.assertEqual(len(graph), 7)
