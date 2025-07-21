@@ -42,7 +42,12 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             return
 
         # Process files using the dependency graph
-        yield from self._process_with_dependency_graph(paths, dry_run, **options)
+        try:
+            yield from self._process_with_dependency_graph(paths, dry_run, **options)
+        except ProcessingException as exc:
+            # django's collectstatic management command is written to expect
+            # the exception to be returned in this format
+            yield exc.file_name, None, exc.original_exception
 
     def _process_with_dependency_graph(self, paths, dry_run=False, **options):
         """
@@ -51,12 +56,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         if dry_run:
             return
 
-        # Build the dependency graph
-        adjustable_paths = [
-            path for path in paths if matches_patterns(path, self._patterns)
-        ]
-
-        graph, non_adjustable = self._build_dependency_graph(paths, adjustable_paths)
+        graph, non_adjustable = self._build_dependency_graph(paths)
 
         # Dictionary to store hashed file names
         hashed_files = {}
@@ -64,35 +64,29 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         # Sort files in dependency order
         linear_deps, circular_deps = self._topological_sort(graph, non_adjustable)
 
-        try:
-            # First process non-adjustable files and linear dependencies
-            for name in list(non_adjustable) + linear_deps:
-                name, hashed_name, processed = self._process_file(
-                    name, paths[name], hashed_files, graph=graph
-                )
+        # First process non-adjustable files and linear dependencies
+        for name in list(non_adjustable) + linear_deps:
+            name, hashed_name, processed = self._process_file(
+                name, paths[name], hashed_files, graph=graph
+            )
+            if processed:
+                hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
+                yield name, hashed_name, processed
+
+        # Handle circular dependencies
+        if circular_deps:
+            circular_hashes = self._process_circular_dependencies(
+                circular_deps, paths, graph, hashed_files
+            )
+            for name, hashed_name, processed in circular_hashes:
                 if processed:
                     hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
                     yield name, hashed_name, processed
 
-            # Handle circular dependencies
-            if circular_deps:
-                circular_hashes = self._process_circular_dependencies(
-                    circular_deps, paths, graph, hashed_files
-                )
-                for name, hashed_name, processed in circular_hashes:
-                    if processed:
-                        hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
-                        yield name, hashed_name, processed
-
-        except ProcessingException as exc:
-            # django's collectstatic management command is written to expect
-            # the exception to be returned in this format
-            yield exc.file_name, None, exc.original_exception
-
         # Store the processed paths
         self.hashed_files.update(hashed_files)
 
-    def _build_dependency_graph(self, paths, adjustable_paths):
+    def _build_dependency_graph(self, paths):
         """
         Build a dependency graph of all files.
 
@@ -118,8 +112,8 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                 "url_positions": [],
             }
         )
-        non_adjustable = set(paths.keys()) - set(adjustable_paths)
 
+        adjustable_paths = []
         # Initialize all files in the graph
         for name in paths:
             if name not in graph:
@@ -129,6 +123,9 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                     "needs_adjustment": False,
                     "url_positions": [],
                 }
+            if matches_patterns(name, ["*.css", "*.js"]):
+                adjustable_paths.append(name)
+        non_adjustable = set(paths.keys()) - set(adjustable_paths)
 
         source_map_patterns = {
             "*.css": re.compile(
@@ -146,9 +143,8 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             with storage.open(path) as original_file:
                 try:
                     content = original_file.read().decode("utf-8")
-                except UnicodeDecodeError:
-                    graph[name]["needs_adjustment"] = True
-                    continue
+                except UnicodeDecodeError as exc:
+                    raise ProcessingException(exc, path)
 
                 url_positions = []
                 dependencies = set()
@@ -177,7 +173,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                         message = (
                             f"The js file '{name}' could not be processed.\n{message}"
                         )
-                        raise ValueError(message)
+                        raise ProcessingException(ValueError(message), name)
                     for url_name, position in urls:
                         if self._should_adjust_url(url_name):
                             target = self._get_target_name(url_name, name)
