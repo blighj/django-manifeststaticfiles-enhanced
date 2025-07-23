@@ -393,37 +393,7 @@ def extract_css_urls(css_content):
 
     for i, (token_name, token_text, position) in enumerate(tokens):
         if token_name == "url":
-            # Extract the actual URL from the url() function
-            # token_text looks like: url('image.jpg') or url(image.jpg)
-            # or url("image.jpg")
-
-            # Remove 'url(' from start and ')' from end
-            url_content = token_text[4:-1].strip()
-
-            # Calculate the position of the URL content
-            # position + "url(".length + any whitespace before content
-            url_start_pos = position + 4  # Skip "url("
-
-            # Skip any whitespace after "url("
-            while (
-                url_start_pos < len(css_content)
-                and css_content[url_start_pos].isspace()
-            ):
-                url_start_pos += 1
-
-            # Remove quotes if present and adjust position accordingly
-            if (url_content.startswith('"') and url_content.endswith('"')) or (
-                url_content.startswith("'") and url_content.endswith("'")
-            ):
-                # URL is quoted - keep it as-is (comments are literal)
-                clean_url = url_content[1:-1]
-                url_start_pos += 1  # Skip the opening quote
-            else:
-                # URL is unquoted - remove CSS comments
-                clean_url = re.sub(r"/\*.*?\*/", "", url_content).strip()
-                # For unquoted URLs, position stays the same (no quote to skip)
-
-            urls.append((clean_url, url_start_pos))
+            urls.append(_extract_url_details(token_text, position, css_content))
         elif token_name == "string" and i > 0:
             # Check if this string follows an @import
             # Look back through whitespace and comments to find @import
@@ -443,6 +413,36 @@ def extract_css_urls(css_content):
     return urls
 
 
+def _extract_url_details(token_text, position, css_content):
+    # Extract the actual URL from the url() function
+    # token_text looks like: url('image.jpg') or url(image.jpg)
+    # or url("image.jpg")
+
+    # Remove 'url(' from start and ')' from end
+    url_content = token_text[4:-1].strip()
+
+    # Calculate the position of the URL content
+    # position + "url(".length + any whitespace before content
+    url_start_pos = position + 4  # Skip "url("
+
+    # Skip any whitespace after "url("
+    while url_start_pos < len(css_content) and css_content[url_start_pos].isspace():
+        url_start_pos += 1
+
+    # Remove quotes if present and adjust position accordingly
+    if (url_content.startswith('"') and url_content.endswith('"')) or (
+        url_content.startswith("'") and url_content.endswith("'")
+    ):
+        # URL is quoted - keep it as-is (comments are literal)
+        clean_url = url_content[1:-1]
+        url_start_pos += 1  # Skip the opening quote
+    else:
+        # URL is unquoted - remove CSS comments
+        clean_url = re.sub(r"/\*.*?\*/", "", url_content).strip()
+        # For unquoted URLs, position stays the same (no quote to skip)
+    return (clean_url, url_start_pos)
+
+
 def find_import_export_strings(file_contents, should_ignore_url=None):
     lexer = JsLexer()
     tokens = list(lexer.lex(file_contents))
@@ -450,97 +450,96 @@ def find_import_export_strings(file_contents, should_ignore_url=None):
     tokens = [token_tuple for token_tuple in tokens if token_tuple[0] != "ws"]
     matches = []
 
-    def _append_match(token_tuple):
-        # we can't support template strings with variables
-        if token_tuple[1].startswith("`") and "${" in token_tuple[1]:
-            url = token_tuple[1][1:-1].split("?")[0]
-            if "${" in url:
-                if should_ignore_url(url):
-                    return
-                message = (
-                    f"Found a template literal with a variable: {url} "
-                    "Dynamic imports with template literals containing variables "
-                    "are not supported as the actual import path cannot be "
-                    "determined at build time."
-                )
-                raise ValueError(message)
-
-        # the lex parser returns the string, with the wrapping quotes, remove them
-        matches.append((token_tuple[1][1:-1], token_tuple[2] + 1))
-
     for i, (name, value, _) in enumerate(tokens):
         if name == "keyword" and value == "import":
-            # Check if this is actually a method name
-            # (part of an object access) by looking at the previous token
-            # if it's a . then this is a method name, not an import statement
-            if i > 0 and tokens[i - 1][0] == "punct" and tokens[i - 1][1] == ".":
-                continue
-
-            # check for plain import and function imports first
-            # import "module-name";
-            if i + 1 < len(tokens) and tokens[i + 1][0] == "string":
-                _append_match(tokens[i + 1])
-            # import("module-name");
-            elif (
-                i + 2 < len(tokens)
-                and tokens[i + 1][0] == "punct"
-                and tokens[i + 1][1] == "("
-            ):
-                _append_match(tokens[i + 2])
-            # or we keep going till we see from
-            # import { export1 } from "module-name";
-            # import { export1 as alias1 } from "module-name";
-            # import { default as alias } from "module-name";
-            # import { export1, export2 } from "module-name";
-            # import { export1, export2 as alias2, /* … */ } from "module-name";
-            # import { "string name" as alias } from "module-name";
-            # import defaultExport, { export1, /* … */ } from "module-name";
-            # import defaultExport, * as name from "module-name";
-            else:
-                for j in range(i + 1, len(tokens)):
-                    if (
-                        tokens[j][0] == "id"
-                        and tokens[j][1] == "from"
-                        and j + 1 < len(tokens)
-                    ):
-                        _append_match(tokens[j + 1])
-                        break
+            import_details = _extract_import_details(tokens, i, should_ignore_url)
+            if import_details:
+                matches.append(import_details)
 
         elif name == "keyword" and value == "export":
-            # export is used within modules as well as aggregation
-            # we need to distinguish between them by looking for the from keyword
-            # also from is an id not a reserved keyword
-            # case 1
-            # export * from "module-name";
-            # export * as name1 from "module-name";
-
-            if i + 1 < len(tokens) and tokens[i + 1][1] == "*":
-                for j in range(i + 1, len(tokens)):
-                    if (
-                        tokens[j][0] == "id"
-                        and tokens[j][1] == "from"
-                        and j + 1 < len(tokens)
-                    ):
-                        _append_match(tokens[j + 1])
-                        break
-
-            # export { name1, /* …, */ nameN } from "module-name";
-            # export { import1 as name1, /* …, */ nameN } from "module-name";
-            # export { default, /* …, */ } from "module-name";
-            # export { default as name1 } from "module-name";
-            # find the end of the } and check if there is a from module statement
-            elif (
-                i + 1 < len(tokens) and i + 1 < len(tokens) and tokens[i + 1][1] == "{"
-            ):
-                for j in range(i + 1, len(tokens)):
-                    if (
-                        tokens[j][0] == "punct"
-                        and tokens[j][1] == "}"
-                        and j + 2 < len(tokens)
-                        and tokens[j + 1][0] == "id"
-                        and tokens[j + 1][1] == "from"
-                    ):
-                        _append_match(tokens[j + 2])
-                        break
+            export_details = _extract_export_details(tokens, i, should_ignore_url)
+            if export_details:
+                matches.append(export_details)
 
     return matches
+
+
+def _extract_import_details(tokens, i, should_ignore_url):
+    # Check if this is actually a method name
+    # (part of an object access) by looking at the previous token
+    # if it's a . then this is a method name, not an import statement
+    if i > 0 and tokens[i - 1][0] == "punct" and tokens[i - 1][1] == ".":
+        return False
+
+    # check for plain import and function imports first
+    # import "module-name";
+    if i + 1 < len(tokens) and tokens[i + 1][0] == "string":
+        return _format_match(tokens[i + 1], should_ignore_url)
+    # import("module-name");
+    elif (
+        i + 2 < len(tokens) and tokens[i + 1][0] == "punct" and tokens[i + 1][1] == "("
+    ):
+        return _format_match(tokens[i + 2], should_ignore_url)
+    # or we keep going till we see from
+    # import { export1 } from "module-name";
+    # import { export1 as alias1 } from "module-name";
+    # import { default as alias } from "module-name";
+    # import { export1, export2 } from "module-name";
+    # import { export1, export2 as alias2, /* … */ } from "module-name";
+    # import { "string name" as alias } from "module-name";
+    # import defaultExport, { export1, /* … */ } from "module-name";
+    # import defaultExport, * as name from "module-name";
+    else:
+        for j in range(i + 1, len(tokens)):
+            if tokens[j][0] == "id" and tokens[j][1] == "from" and j + 1 < len(tokens):
+                return _format_match(tokens[j + 1], should_ignore_url)
+    return False
+
+
+def _extract_export_details(tokens, i, should_ignore_url):
+    # export is used within modules as well as aggregation
+    # we need to distinguish between them by looking for the from keyword
+    # also from is an id not a reserved keyword
+    # case 1
+    # export * from "module-name";
+    # export * as name1 from "module-name";
+
+    if i + 1 < len(tokens) and tokens[i + 1][1] == "*":
+        for j in range(i + 1, len(tokens)):
+            if tokens[j][0] == "id" and tokens[j][1] == "from" and j + 1 < len(tokens):
+                return _format_match(tokens[j + 1], should_ignore_url)
+
+    # export { name1, /* …, */ nameN } from "module-name";
+    # export { import1 as name1, /* …, */ nameN } from "module-name";
+    # export { default, /* …, */ } from "module-name";
+    # export { default as name1 } from "module-name";
+    # find the end of the } and check if there is a from module statement
+    elif i + 1 < len(tokens) and i + 1 < len(tokens) and tokens[i + 1][1] == "{":
+        for j in range(i + 1, len(tokens)):
+            if (
+                tokens[j][0] == "punct"
+                and tokens[j][1] == "}"
+                and j + 2 < len(tokens)
+                and tokens[j + 1][0] == "id"
+                and tokens[j + 1][1] == "from"
+            ):
+                return _format_match(tokens[j + 2], should_ignore_url)
+    return False
+
+
+def _format_match(token_tuple, should_ignore_url):
+    # we can't support template strings with variables
+    if token_tuple[1].startswith("`") and "${" in token_tuple[1]:
+        url = token_tuple[1][1:-1].split("?")[0]
+        if "${" in url:
+            if should_ignore_url(url):
+                return
+            message = (
+                f"Found a template literal with a variable: {url} "
+                "Dynamic imports with template literals containing variables "
+                "are not supported as the actual import path cannot be "
+                "determined at build time."
+            )
+            raise ValueError(message)
+    # the lex parser returns the string, with the wrapping quotes, remove them
+    return (token_tuple[1][1:-1], token_tuple[2] + 1)
