@@ -126,16 +126,6 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                 adjustable_paths.append(name)
         non_adjustable = set(paths.keys()) - set(adjustable_paths)
 
-        source_map_patterns = {
-            "*.css": re.compile(
-                r"(?m)^/\*#[ \t](?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*\*/$",
-                re.IGNORECASE,
-            ),
-            "*.js": re.compile(
-                r"(?m)^//# (?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*$", re.IGNORECASE
-            ),
-        }
-
         for name in adjustable_paths:
             storage, path = paths[name]
 
@@ -149,46 +139,23 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                 dependencies = set()
 
                 # Process CSS files
-                if matches_patterns(path, ("*.css",)):
-                    for url_name, position in extract_css_urls(content):
-                        if self._should_adjust_url(url_name):
-                            target = self._get_target_name(url_name, name)
-                            dependencies.add(target)
-                            url_positions.append((url_name, position))
-
+                result_url_positions, result_dependencies = self._process_css_modules(
+                    name, content
+                )
+                url_positions = url_positions + result_url_positions
+                dependencies = dependencies | result_dependencies
                 # Process JS files with module imports
-                if self.support_js_module_import_aggregation and matches_patterns(
-                    path, ("*.js",)
-                ):
-                    try:
-                        urls = find_import_export_strings(
-                            content,
-                            should_ignore_url=lambda url: self._should_ignore_url(
-                                name, url
-                            ),
-                        )
-                    except ValueError as e:
-                        message = e.args[0] if len(e.args) else ""
-                        message = (
-                            f"The js file '{name}' could not be processed.\n{message}"
-                        )
-                        raise ProcessingException(ValueError(message), name)
-                    for url_name, position in urls:
-                        if self._should_adjust_url(url_name):
-                            target = self._get_target_name(url_name, name)
-                            dependencies.add(target)
-                            url_positions.append((url_name, position))
-
+                result_url_positions, result_dependencies = self._process_js_modules(
+                    name, content
+                )
+                url_positions = url_positions + result_url_positions
+                dependencies = dependencies | result_dependencies
                 # Check for sourceMappingURL
-                if "sourceMappingURL" in content:
-                    for extension, pattern in source_map_patterns.items():
-                        if matches_patterns(name, (extension,)):
-                            for match in pattern.finditer(content):
-                                url = match.group("url")
-                                if self._should_adjust_url(url):
-                                    target = self._get_target_name(url, name)
-                                    dependencies.add(target)
-                                    url_positions.append((url, match.start("url")))
+                result_url_positions, result_dependencies = self._process_sourcemap(
+                    name, content
+                )
+                url_positions = url_positions + result_url_positions
+                dependencies = dependencies | result_dependencies
 
                 # Update graph with dependencies and URL positions
                 if url_positions:
@@ -206,6 +173,83 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                     non_adjustable.add(name)
 
         return graph, non_adjustable
+
+    def _process_js_modules(self, name, content):
+        """Process JavaScript import/export statements."""
+        url_positions = []
+        dependencies = set()
+
+        if not self.support_js_module_import_aggregation or not matches_patterns(
+            name, ("*.js",)
+        ):
+            return url_positions, dependencies
+
+        complex_adjustments = "import" in content or (
+            "export" in content and "from" in content
+        )
+
+        if not complex_adjustments:
+            return url_positions, dependencies
+
+        try:
+            urls = find_import_export_strings(
+                content,
+                should_ignore_url=lambda url: self._should_ignore_url(name, url),
+            )
+        except ValueError as e:
+            message = e.args[0] if len(e.args) else ""
+            message = f"The js file '{name}' could not be processed.\n{message}"
+            raise ProcessingException(ValueError(message), name)
+        for url_name, position in urls:
+            if self._should_adjust_url(url_name):
+                target = self._get_target_name(url_name, name)
+                dependencies.add(target)
+                url_positions.append((url_name, position))
+
+        return url_positions, dependencies
+
+    def _process_css_modules(self, name, content):
+        """Process JavaScript import/export statements."""
+        url_positions = []
+        dependencies = set()
+        if not matches_patterns(name, ("*.css",)):
+            return url_positions, dependencies
+        search_content = content.lower()
+        complex_adjustments = "url(" in search_content or "import" in search_content
+
+        if not complex_adjustments:
+            return url_positions, dependencies
+
+        for url_name, position in extract_css_urls(content):
+            if self._should_adjust_url(url_name):
+                target = self._get_target_name(url_name, name)
+                dependencies.add(target)
+                url_positions.append((url_name, position))
+        return url_positions, dependencies
+
+    def _process_sourcemap(self, name, content):
+        source_map_patterns = {
+            "*.css": re.compile(
+                r"(?m)^/\*#[ \t](?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*\*/$",
+                re.IGNORECASE,
+            ),
+            "*.js": re.compile(
+                r"(?m)^//# (?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*$", re.IGNORECASE
+            ),
+        }
+        url_positions = []
+        dependencies = set()
+        if "sourceMappingURL" not in content:
+            return url_positions, dependencies
+        for extension, pattern in source_map_patterns.items():
+            if matches_patterns(name, (extension,)):
+                for match in pattern.finditer(content):
+                    url = match.group("url")
+                    if self._should_adjust_url(url):
+                        target = self._get_target_name(url, name)
+                        dependencies.add(target)
+                        url_positions.append((url, match.start("url")))
+        return url_positions, dependencies
 
     def _should_adjust_url(self, url):
         """
@@ -296,16 +340,8 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             Dict of files that have circular dependencies
         """
         result = []
-        in_degree = defaultdict(int)
+        in_degree = self._calculate_in_degree(graph, non_adjustable)
         circular = {}
-
-        # Calculate in-degree for each node
-        # (count dependencies not in non_adjustable)
-        for node, data in graph.items():
-            if node not in non_adjustable and data["needs_adjustment"]:
-                for dep in data["dependencies"]:
-                    if dep not in non_adjustable and dep in graph:
-                        in_degree[node] += 1
 
         # Start with nodes that have no dependencies or only depend on
         # non-adjustable files
@@ -345,6 +381,18 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                 ]
 
         return result, circular
+
+    def _calculate_in_degree(self, graph, non_adjustable):
+        """
+        Compute in-degree (number of incoming dependence) for all the nodes
+        """
+        in_degree = defaultdict(int)
+        for node, data in graph.items():
+            if node not in non_adjustable and data["needs_adjustment"]:
+                for dep in data["dependencies"]:
+                    if dep not in non_adjustable and dep in graph:
+                        in_degree[node] += 1
+        return in_degree
 
     def _process_file(self, name, storage_and_path, hashed_files, graph):
         """
