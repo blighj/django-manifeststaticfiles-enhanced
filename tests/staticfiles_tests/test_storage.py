@@ -1379,6 +1379,7 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                 self.assertIn(f"common.{common_hash_changed}.css".encode(), content)
 
 
+@unittest.skipIf(django.VERSION[:2] in [(4, 2), (5, 0)], "No support for 4.2, 5.0")
 @override_settings(
     STORAGES={
         **settings.STORAGES,
