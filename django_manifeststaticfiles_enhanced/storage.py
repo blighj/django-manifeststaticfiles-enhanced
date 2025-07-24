@@ -43,19 +43,16 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
         # Process files using the dependency graph
         try:
-            yield from self._process_with_dependency_graph(paths, dry_run)
+            yield from self._process_with_dependency_graph(paths)
         except ProcessingException as exc:
             # django's collectstatic management command is written to expect
             # the exception to be returned in this format
             yield exc.file_name, None, exc.original_exception
 
-    def _process_with_dependency_graph(self, paths, dry_run=False):
+    def _process_with_dependency_graph(self, paths):
         """
         Process static files using a unified dependency graph approach.
         """
-        if dry_run:
-            return
-
         graph, non_adjustable = self._build_dependency_graph(paths)
 
         # Dictionary to store hashed file names
@@ -135,6 +132,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                 except UnicodeDecodeError as exc:
                     raise ProcessingException(exc, path)
 
+                # build a list of content's referenced urls and their position
                 url_positions = (
                     # Process CSS files
                     self._process_css_urls(name, content)
