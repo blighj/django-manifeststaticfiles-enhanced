@@ -5,14 +5,14 @@ import textwrap
 from collections import defaultdict
 from urllib.parse import unquote, urldefrag
 
-import django
-from django.conf import STATICFILES_STORAGE_ALIAS, settings
+from django.conf import settings
 from django.contrib.staticfiles.storage import (
     HashedFilesMixin,
     ManifestFilesMixin,
     StaticFilesStorage,
 )
 from django.contrib.staticfiles.utils import matches_patterns
+from django.core.exceptions import ImproperlyConfigured
 from django.core.files.base import ContentFile
 
 from django_manifeststaticfiles_enhanced.jslex import (
@@ -43,13 +43,13 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
         # Process files using the dependency graph
         try:
-            yield from self._process_with_dependency_graph(paths, dry_run, **options)
+            yield from self._process_with_dependency_graph(paths, dry_run)
         except ProcessingException as exc:
             # django's collectstatic management command is written to expect
             # the exception to be returned in this format
             yield exc.file_name, None, exc.original_exception
 
-    def _process_with_dependency_graph(self, paths, dry_run=False, **options):
+    def _process_with_dependency_graph(self, paths, dry_run=False):
         """
         Process static files using a unified dependency graph approach.
         """
@@ -135,61 +135,56 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                 except UnicodeDecodeError as exc:
                     raise ProcessingException(exc, path)
 
-                url_positions = []
-                dependencies = set()
-
-                # Process CSS files
-                result_url_positions, result_dependencies = self._process_css_modules(
-                    name, content
+                url_positions = (
+                    # Process CSS files
+                    self._process_css_urls(name, content)
+                    +
+                    # Process JS files with module imports
+                    self._process_js_modules(name, content)
+                    +
+                    # Check for sourceMappingURL
+                    self._process_sourcemap(name, content)
                 )
-                url_positions = url_positions + result_url_positions
-                dependencies = dependencies | result_dependencies
-                # Process JS files with module imports
-                result_url_positions, result_dependencies = self._process_js_modules(
-                    name, content
-                )
-                url_positions = url_positions + result_url_positions
-                dependencies = dependencies | result_dependencies
-                # Check for sourceMappingURL
-                result_url_positions, result_dependencies = self._process_sourcemap(
-                    name, content
-                )
-                url_positions = url_positions + result_url_positions
-                dependencies = dependencies | result_dependencies
-
                 # Update graph with dependencies and URL positions
                 if url_positions:
                     graph[name]["url_positions"] = url_positions
                     graph[name]["needs_adjustment"] = True
 
-                    # Add dependencies to the graph
-                    graph[name]["dependencies"].update(dependencies)
-
-                    # Update dependents for each dependency
-                    for dep in dependencies:
-                        if dep in graph:
-                            graph[dep]["dependents"].add(name)
+                    self._update_dependencies(name, url_positions, graph)
                 else:
                     non_adjustable.add(name)
 
         return graph, non_adjustable
 
+    def _update_dependencies(self, name, url_positions, graph):
+        dependencies = set()
+        for url_name, _ in url_positions:
+            # normalise base.css, /static/base.css, ../base.css, etc
+            target = self._get_target_name(url_name, name)
+            dependencies.add(target)
+        # Add dependencies to the graph
+        graph[name]["dependencies"].update(dependencies)
+
+        # Update dependents for each dependency
+        for dep in dependencies:
+            if dep in graph:
+                graph[dep]["dependents"].add(name)
+
     def _process_js_modules(self, name, content):
         """Process JavaScript import/export statements."""
         url_positions = []
-        dependencies = set()
 
         if not self.support_js_module_import_aggregation or not matches_patterns(
             name, ("*.js",)
         ):
-            return url_positions, dependencies
+            return url_positions
 
         complex_adjustments = "import" in content or (
             "export" in content and "from" in content
         )
 
         if not complex_adjustments:
-            return url_positions, dependencies
+            return url_positions
 
         try:
             urls = find_import_export_strings(
@@ -202,54 +197,48 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             raise ProcessingException(ValueError(message), name)
         for url_name, position in urls:
             if self._should_adjust_url(url_name):
-                target = self._get_target_name(url_name, name)
-                dependencies.add(target)
                 url_positions.append((url_name, position))
 
-        return url_positions, dependencies
+        return url_positions
 
-    def _process_css_modules(self, name, content):
-        """Process JavaScript import/export statements."""
+    def _process_css_urls(self, name, content):
+        """Process CSS url & import statements."""
         url_positions = []
-        dependencies = set()
         if not matches_patterns(name, ("*.css",)):
-            return url_positions, dependencies
+            return url_positions
         search_content = content.lower()
         complex_adjustments = "url(" in search_content or "import" in search_content
 
         if not complex_adjustments:
-            return url_positions, dependencies
+            return url_positions
 
         for url_name, position in extract_css_urls(content):
             if self._should_adjust_url(url_name):
-                target = self._get_target_name(url_name, name)
-                dependencies.add(target)
                 url_positions.append((url_name, position))
-        return url_positions, dependencies
+        return url_positions
 
     def _process_sourcemap(self, name, content):
-        source_map_patterns = {
-            "*.css": re.compile(
-                r"(?m)^/\*#[ \t](?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*\*/$",
-                re.IGNORECASE,
-            ),
-            "*.js": re.compile(
-                r"(?m)^//# (?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*$", re.IGNORECASE
-            ),
-        }
         url_positions = []
-        dependencies = set()
         if "sourceMappingURL" not in content:
-            return url_positions, dependencies
-        for extension, pattern in source_map_patterns.items():
+            return url_positions
+
+        for extension, pattern in self.source_map_patterns.items():
             if matches_patterns(name, (extension,)):
                 for match in pattern.finditer(content):
                     url = match.group("url")
                     if self._should_adjust_url(url):
-                        target = self._get_target_name(url, name)
-                        dependencies.add(target)
                         url_positions.append((url, match.start("url")))
-        return url_positions, dependencies
+        return url_positions
+
+    source_map_patterns = {
+        "*.css": re.compile(
+            r"(?m)^/\*#[ \t](?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*\*/$",
+            re.IGNORECASE,
+        ),
+        "*.js": re.compile(
+            r"(?m)^//# (?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*$", re.IGNORECASE
+        ),
+    }
 
     def _should_adjust_url(self, url):
         """
@@ -754,12 +743,6 @@ class EnhancedManifestStaticFilesStorage(
         *args,
         **kwargs,
     ):
-        # Django 4.2/5.0 compatibility: Recover OPTIONS from STORAGES when
-        # STATICFILES_STORAGE is auto-generated from STORAGES setting
-        # In Django 5.1+, the deprecated STATICFILES_STORAGE setting was removed
-        if django.VERSION[:2] in [(4, 2), (5, 0)]:
-            self._recover_options_from_storages(kwargs)
-
         # Set configurable attributes as instance attributes if provided
         if support_js_module_import_aggregation is not None:
             self.support_js_module_import_aggregation = (
@@ -772,58 +755,9 @@ class EnhancedManifestStaticFilesStorage(
         if keep_original_files is not None:
             self.keep_original_files = keep_original_files
         if ignore_errors is not None:
+            if not isinstance(ignore_errors, list):
+                raise ImproperlyConfigured("ignore_errors must be a list")
             self.ignore_errors = ignore_errors
         else:
             self.ignore_errors = []
         super().__init__(location, base_url, *args, **kwargs)
-
-    def _recover_options_from_storages(self, kwargs):
-        """
-        Django 4.2/5.0 compatibility: When STORAGES is overridden, Django automatically
-        sets STATICFILES_STORAGE to the BACKEND value, but loses the OPTIONS.
-        This method recovers the OPTIONS from the original STORAGES setting.
-        """
-        # Check if we can detect that STATICFILES_STORAGE was auto-generated
-        # from STORAGES
-        # This happens when:
-        # 1. STATICFILES_STORAGE points to our class
-        # 2. STORAGES[staticfiles] has OPTIONS but kwargs is empty
-        # 3. Either we're in a test override or STORAGES was explicitly set
-
-        staticfiles_storage_config = settings.STORAGES.get(
-            STATICFILES_STORAGE_ALIAS, {}
-        )
-        storage_options = staticfiles_storage_config.get("OPTIONS", {})
-
-        # If STORAGES has OPTIONS but we didn't receive them in kwargs,
-        # and STATICFILES_STORAGE points to our class, recover the options
-        if (
-            storage_options
-            and not kwargs
-            and settings.STATICFILES_STORAGE
-            == (
-                "django_manifeststaticfiles_enhanced.storage."
-                "EnhancedManifestStaticFilesStorage"
-            )
-        ):
-
-            # Add missing options to kwargs
-            for option_name, option_value in storage_options.items():
-                kwargs[option_name] = option_value
-
-        # Apply kwargs options to instance attributes to bridge the gap between
-        # explicit parameters and OPTIONS dict
-        option_mapping = {
-            "max_post_process_passes": "max_post_process_passes",
-            "support_js_module_import_aggregation": (
-                "support_js_module_import_aggregation"
-            ),
-            "manifest_name": "manifest_name",
-            "manifest_strict": "manifest_strict",
-            "keep_original_files": "keep_original_files",
-            "ignore_errors": "ignore_errors",
-        }
-
-        for kwarg_name, attr_name in option_mapping.items():
-            if kwarg_name in kwargs:
-                setattr(self, attr_name, kwargs.pop(kwarg_name))
