@@ -66,9 +66,8 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             name, hashed_name, processed = self._process_file(
                 name, paths[name], hashed_files, graph=graph
             )
-            if processed:
-                hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
-                yield name, hashed_name, processed
+            hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
+            yield name, hashed_name, processed
 
         # Handle circular dependencies
         if circular_deps:
