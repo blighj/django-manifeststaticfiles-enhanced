@@ -2,7 +2,7 @@ import os
 import posixpath
 import re
 import textwrap
-from collections import defaultdict
+from graphlib import CycleError, TopologicalSorter
 from urllib.parse import unquote, urldefrag
 
 from django.conf import settings
@@ -53,18 +53,15 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         """
         Process static files using a unified dependency graph approach.
         """
-        graph, non_adjustable = self._build_dependency_graph(paths)
-
         # Dictionary to store hashed file names
         hashed_files = {}
-
-        # Sort files in dependency order
-        linear_deps, circular_deps = self._topological_sort(graph, non_adjustable)
-
+        linear_deps, circular_deps, url_positions_dict = (
+            self._process_as_dependency_graph(paths)
+        )
         # First process non-adjustable files and linear dependencies
-        for name in list(non_adjustable) + linear_deps:
+        for name in linear_deps:
             name, hashed_name, processed = self._process_file(
-                name, paths[name], hashed_files, graph=graph
+                name, paths[name], hashed_files, url_positions_dict.get(name, [])
             )
             hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
             yield name, hashed_name, processed
@@ -72,7 +69,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         # Handle circular dependencies
         if circular_deps:
             circular_hashes = self._process_circular_dependencies(
-                circular_deps, paths, graph, hashed_files
+                circular_deps, paths, url_positions_dict, hashed_files
             )
             for name, hashed_name in circular_hashes:
                 hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
@@ -81,45 +78,22 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         # Store the processed paths
         self.hashed_files.update(hashed_files)
 
-    def _build_dependency_graph(self, paths):
+    def _process_as_dependency_graph(self, paths):
         """
-        Build a dependency graph of all files.
+        Use a dependency graph to return a topological sorted list of files to process.
 
         Returns:
-            graph: Dict mapping each file to its dependencies
-            non_adjustable: Set of files that don't need processing
+            linear_deps: List of files that don't need processing,
+            followed by those that do, topologically sorted
+            circular_deps: List of files that have circular dependencies
+            url_positions_dict: Dictionary of url's that need updating
         """
 
-        # Graph structure:
-        # {
-        #   file_name: {
-        #     'dependencies': set(dependency_files),
-        #     'dependents': set(files_that_depend_on_this),
-        #     'needs_adjustment': bool,
-        #     'url_positions': [(url, position), ...]
-        #   }
-        # }
-        graph = defaultdict(
-            lambda: {
-                "dependencies": set(),
-                "dependents": set(),
-                "needs_adjustment": False,
-                "url_positions": [],
-            }
-        )
-
-        adjustable_paths = []
-        # Initialize all files in the graph
-        for name in paths:
-            if name not in graph:
-                graph[name] = {
-                    "dependencies": set(),
-                    "dependents": set(),
-                    "needs_adjustment": False,
-                    "url_positions": [],
-                }
-            if matches_patterns(name, ["*.css", "*.js"]):
-                adjustable_paths.append(name)
+        url_positions_dict = {}
+        graph_sorter = TopologicalSorter()
+        adjustable_paths = [
+            path for path in paths if matches_patterns(path, ["*.css", "*.js"])
+        ]
         non_adjustable = set(paths.keys()) - set(adjustable_paths)
 
         for name in adjustable_paths:
@@ -133,39 +107,38 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
                 # build a list of content's referenced urls and their position
                 url_positions = (
-                    # Process CSS files
                     self._process_css_urls(name, content)
-                    +
-                    # Process JS files with module imports
-                    self._process_js_modules(name, content)
-                    +
-                    # Check for sourceMappingURL
-                    self._process_sourcemap(name, content)
+                    + self._process_js_modules(name, content)
+                    + self._process_sourcemap(name, content)
                 )
                 # Update graph with dependencies and URL positions
                 if url_positions:
-                    graph[name]["url_positions"] = url_positions
-                    graph[name]["needs_adjustment"] = True
-
-                    self._update_dependencies(name, url_positions, graph)
+                    url_positions_dict[name] = url_positions
+                    self._update_dependencies(name, url_positions, graph_sorter)
                 else:
                     non_adjustable.add(name)
 
-        return graph, non_adjustable
+        try:
+            graph_sorter.prepare()
+        except CycleError:
+            # Even if there is a CycleError we can still access the linear
+            # nodes using get_ready
+            pass
+        linear_deps = []
+        while graph_sorter.is_active():
+            node_group = graph_sorter.get_ready()
+            linear_deps += [node for node in node_group if node in adjustable_paths]
+            graph_sorter.done(*node_group)
+        linear_deps = list(non_adjustable) + linear_deps
+        circular_deps = set(adjustable_paths) - set(linear_deps)
 
-    def _update_dependencies(self, name, url_positions, graph):
-        dependencies = set()
+        return linear_deps, circular_deps, url_positions_dict
+
+    def _update_dependencies(self, name, url_positions, graph_sorter):
         for url_name, _ in url_positions:
             # normalise base.css, /static/base.css, ../base.css, etc
             target = self._get_target_name(url_name, name)
-            dependencies.add(target)
-        # Add dependencies to the graph
-        graph[name]["dependencies"].update(dependencies)
-
-        # Update dependents for each dependency
-        for dep in dependencies:
-            if dep in graph:
-                graph[dep]["dependents"].add(name)
+            graph_sorter.add(name, target)
 
     def _process_js_modules(self, name, content):
         """Process JavaScript import/export statements."""
@@ -315,72 +288,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             target_name = posixpath.join(posixpath.dirname(source_name), url_path)
         return target_name
 
-    def _topological_sort(self, graph, non_adjustable):
-        """
-        Sort the files in dependency order using Kahn's algorithm.
-        Files with no dependencies (or only dependencies on non-adjustable files)
-        come first.
-
-        Returns:
-            List of files that have linear dpendencies in processing order
-            Dict of files that have circular dependencies
-        """
-        result = []
-        in_degree = self._calculate_in_degree(graph, non_adjustable)
-        circular = {}
-
-        # Start with nodes that have no dependencies or only depend on
-        # non-adjustable files
-        queue = [
-            node
-            for node, data in graph.items()
-            if node not in non_adjustable
-            and data["needs_adjustment"]
-            and in_degree[node] == 0
-        ]
-
-        while queue:
-            node = queue.pop(0)
-            result.append(node)
-
-            # Remove this node from the graph (reduce in-degree of dependents)
-            for dependent in graph[node]["dependents"]:
-                if dependent not in non_adjustable and dependent not in result:
-                    in_degree[dependent] -= 1
-                    if in_degree[dependent] == 0:
-                        queue.append(dependent)
-
-        # If we still have nodes with in-degree > 0, we have cycles
-        remaining = {
-            node: data
-            for node, data in graph.items()
-            if node not in result
-            and node not in non_adjustable
-            and data["needs_adjustment"]
-        }
-
-        if remaining:
-            # Detect and record circular dependencies
-            for node in remaining:
-                circular[node] = [
-                    dep for dep in graph[node]["dependencies"] if dep in remaining
-                ]
-
-        return result, circular
-
-    def _calculate_in_degree(self, graph, non_adjustable):
-        """
-        Compute in-degree (number of incoming dependence) for all the nodes
-        """
-        in_degree = defaultdict(int)
-        for node, data in graph.items():
-            if node not in non_adjustable and data["needs_adjustment"]:
-                for dep in data["dependencies"]:
-                    if dep not in non_adjustable and dep in graph:
-                        in_degree[node] += 1
-        return in_degree
-
-    def _process_file(self, name, storage_and_path, hashed_files, graph):
+    def _process_file(self, name, storage_and_path, hashed_files, url_positions):
         """
         Process a single file using the unified graph structure.
         """
@@ -397,7 +305,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
             # If this is an adjustable file with URL positions,
             # apply transformations
-            if name in graph and graph[name]["needs_adjustment"]:
+            if url_positions:
                 try:
                     if hasattr(original_file, "seek"):
                         original_file.seek(0)
@@ -406,7 +314,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
                     # Apply URL substitutions using stored positions
                     content = self._process_file_content(
-                        name, content, graph[name]["url_positions"], hashed_files
+                        name, content, url_positions, hashed_files
                     )
 
                     # Create a content file and calculate its hash
@@ -476,7 +384,9 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         result_parts.append(content[last_position:])
         return "".join(result_parts)
 
-    def _process_circular_dependencies(self, circular_deps, paths, graph, hashed_files):
+    def _process_circular_dependencies(
+        self, circular_deps, paths, url_positions_dict, hashed_files
+    ):
         """
         Process files with circular dependencies.
 
@@ -489,7 +399,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         Args:
             circular_deps: Dict mapping files to their circular dependencies
             paths: Dict mapping file paths to (storage, path) tuples
-            graph: Dependency graph built by _build_dependency_graph
+            url_positions_dict: Dictionary of url positions
             hashed_files: Dict of already processed files
         """
         circular_hashes = {}
@@ -498,7 +408,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         # First pass: Replace all non-circular dependency URLs in each file
         # and generate group hash
         group_hash, original_contents = self._calculate_combined_hash(
-            circular_deps, paths, graph, hashed_files
+            circular_deps, paths, url_positions_dict, hashed_files
         )
 
         # Second pass: Create hashed filenames using the group hash
@@ -522,7 +432,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
                 combined_hashes = {**hashed_files, **circular_hashes}
                 content = self._process_file_content(
-                    name, content, graph[name]["url_positions"], combined_hashes
+                    name, content, url_positions_dict.get(name, []), combined_hashes
                 )
 
                 # Get the hashed name for this file
@@ -540,7 +450,9 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                 exc = self._make_helpful_exception(exc, name)
                 raise ProcessingException(exc, name)
 
-    def _calculate_combined_hash(self, circular_deps, paths, graph, hashed_files):
+    def _calculate_combined_hash(
+        self, circular_deps, paths, url_positions_dict, hashed_files
+    ):
         """
         Return a hash of the combined content from all circular dependencies
         Replace the non circular URL's before calculating
@@ -561,7 +473,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
                     # Filter URL positions to only non-circular dependencies
                     non_circular_positions = []
-                    for url, pos in graph[name]["url_positions"]:
+                    for url, pos in url_positions_dict.get(name, []):
                         target = self._get_target_name(url, name)
                         if target not in circular_deps:
                             non_circular_positions.append((url, pos))
