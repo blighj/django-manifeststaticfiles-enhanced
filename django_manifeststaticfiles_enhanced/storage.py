@@ -43,25 +43,24 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
         # Process files using the dependency graph
         try:
-            yield from self._process_with_dependency_graph(paths)
+            yield from self._post_process(paths)
         except ProcessingException as exc:
             # django's collectstatic management command is written to expect
             # the exception to be returned in this format
             yield exc.file_name, None, exc.original_exception
 
-    def _process_with_dependency_graph(self, paths):
+    def _post_process(self, paths):
         """
         Process static files using a unified dependency graph approach.
         """
-        # Dictionary to store hashed file names
         hashed_files = {}
-        linear_deps, circular_deps, url_positions_dict = (
-            self._process_as_dependency_graph(paths)
-        )
-        # First process non-adjustable files and linear dependencies
+
+        substitutions_dict = self._find_substitutions(paths)
+        linear_deps, circular_deps = self._topological_sort(paths, substitutions_dict)
+        # First process the linear dependencies
         for name in linear_deps:
             name, hashed_name, processed = self._process_file(
-                name, paths[name], hashed_files, url_positions_dict.get(name, [])
+                name, paths[name], hashed_files, substitutions_dict.get(name, [])
             )
             hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
             yield name, hashed_name, processed
@@ -69,7 +68,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         # Handle circular dependencies
         if circular_deps:
             circular_hashes = self._process_circular_dependencies(
-                circular_deps, paths, url_positions_dict, hashed_files
+                circular_deps, paths, substitutions_dict, hashed_files
             )
             for name, hashed_name in circular_hashes:
                 hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
@@ -78,45 +77,55 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         # Store the processed paths
         self.hashed_files.update(hashed_files)
 
-    def _process_as_dependency_graph(self, paths):
+    def _find_substitutions(self, paths):
         """
-        Use a dependency graph to return a topological sorted list of files to process.
-
-        Returns:
-            linear_deps: List of files that don't need processing,
-            followed by those that do, topologically sorted
-            circular_deps: List of files that have circular dependencies
-            url_positions_dict: Dictionary of url's that need updating
+        Returns a dictionary mapping file names that need substitutions to a
+        list of file names that need substituting along with the position in
+        the file
         """
-
-        url_positions_dict = {}
-        graph_sorter = TopologicalSorter()
+        substitutions_dict = {}
         adjustable_paths = [
             path for path in paths if matches_patterns(path, ["*.css", "*.js"])
         ]
-        non_adjustable = set(paths.keys()) - set(adjustable_paths)
-
         for name in adjustable_paths:
             storage, path = paths[name]
-
             with storage.open(path) as original_file:
                 try:
                     content = original_file.read().decode("utf-8")
                 except UnicodeDecodeError as exc:
                     raise ProcessingException(exc, path)
 
-                # build a list of content's referenced urls and their position
-                url_positions = (
+                substitutions_dict[name] = (
                     self._process_css_urls(name, content)
                     + self._process_js_modules(name, content)
                     + self._process_sourcemap(name, content)
                 )
-                # Update graph with dependencies and URL positions
-                if url_positions:
-                    url_positions_dict[name] = url_positions
-                    self._update_dependencies(name, url_positions, graph_sorter)
-                else:
-                    non_adjustable.add(name)
+        return substitutions_dict
+
+    def _topological_sort(self, paths, substitutions_dict):
+        """
+        Examines all the files that need substitutions and returns the list of
+        files sorted in an order that is safe to process lineraly, e.g
+        image.png is hashed before styles.css needs to replace it with
+        image.hash.png in a url().
+        Any circular dependencies found will be returned as a seperate list.
+        """
+
+        graph_sorter = TopologicalSorter()
+        adjustable_paths = [
+            path for path in paths if matches_patterns(path, ["*.css", "*.js"])
+        ]
+        non_adjustable = set(paths.keys()) - set(adjustable_paths)
+
+        # build the graph based on the substitutions_dict
+        for name, url_positions in substitutions_dict.items():
+            if url_positions:
+                for url_name, _ in url_positions:
+                    # normalise base.css, /static/base.css, ../base.css, etc
+                    target = self._get_target_name(url_name, name)
+                    graph_sorter.add(name, target)
+            else:
+                non_adjustable.add(name)
 
         try:
             graph_sorter.prepare()
@@ -129,16 +138,15 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             node_group = graph_sorter.get_ready()
             linear_deps += [node for node in node_group if node in adjustable_paths]
             graph_sorter.done(*node_group)
+
+        def path_level(name):
+            return len(name.split(os.sep))
+
+        non_adjustable = sorted(list(non_adjustable), key=path_level, reverse=True)
         linear_deps = list(non_adjustable) + linear_deps
         circular_deps = set(adjustable_paths) - set(linear_deps)
 
-        return linear_deps, circular_deps, url_positions_dict
-
-    def _update_dependencies(self, name, url_positions, graph_sorter):
-        for url_name, _ in url_positions:
-            # normalise base.css, /static/base.css, ../base.css, etc
-            target = self._get_target_name(url_name, name)
-            graph_sorter.add(name, target)
+        return linear_deps, circular_deps
 
     def _process_js_modules(self, name, content):
         """Process JavaScript import/export statements."""
@@ -306,34 +314,26 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             # If this is an adjustable file with URL positions,
             # apply transformations
             if url_positions:
-                try:
-                    if hasattr(original_file, "seek"):
-                        original_file.seek(0)
+                if hasattr(original_file, "seek"):
+                    original_file.seek(0)
+                content = original_file.read().decode("utf-8")
 
-                    content = original_file.read().decode("utf-8")
+                # Apply URL substitutions using stored positions
+                content = self._process_file_content(
+                    name, content, url_positions, hashed_files
+                )
 
-                    # Apply URL substitutions using stored positions
-                    content = self._process_file_content(
-                        name, content, url_positions, hashed_files
-                    )
+                # Create a content file and calculate its hash
+                content_file = ContentFile(content.encode())
+                new_hashed_name = self.hashed_name(name, content_file)
 
-                    # Create a content file and calculate its hash
-                    content_file = ContentFile(content.encode())
-                    new_hashed_name = self.hashed_name(name, content_file)
+                if not self.exists(new_hashed_name):
+                    saved_name = self._save(new_hashed_name, content_file)
+                    hashed_name = self.clean_name(saved_name)
+                else:
+                    hashed_name = new_hashed_name
 
-                    if not self.exists(new_hashed_name):
-                        saved_name = self._save(new_hashed_name, content_file)
-                        hashed_name = self.clean_name(saved_name)
-                    else:
-                        hashed_name = new_hashed_name
-
-                    processed = True
-
-                except UnicodeDecodeError as exc:
-                    raise ProcessingException(exc, name)
-                except ValueError as exc:
-                    exc = self._make_helpful_exception(exc, name)
-                    raise ProcessingException(exc, name)
+                processed = True
 
             elif not hashed_file_exists:
                 # For non-adjustable files just copy the file
@@ -375,7 +375,8 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
                 else:
                     message = exc.args[0] if len(exc.args) else ""
                     message = f"Error processing the url {url}\n{message}"
-                    raise ValueError(message)
+                    exc = self._make_helpful_exception(ValueError(message), name)
+                    raise ProcessingException(exc, name)
 
             result_parts.append(transformed_url)
             last_position = position + len(url)
@@ -385,7 +386,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         return "".join(result_parts)
 
     def _process_circular_dependencies(
-        self, circular_deps, paths, url_positions_dict, hashed_files
+        self, circular_deps, paths, substitutions_dict, hashed_files
     ):
         """
         Process files with circular dependencies.
@@ -399,7 +400,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         Args:
             circular_deps: Dict mapping files to their circular dependencies
             paths: Dict mapping file paths to (storage, path) tuples
-            url_positions_dict: Dictionary of url positions
+            substitutions_dict: Dictionary of url positions
             hashed_files: Dict of already processed files
         """
         circular_hashes = {}
@@ -408,7 +409,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         # First pass: Replace all non-circular dependency URLs in each file
         # and generate group hash
         group_hash, original_contents = self._calculate_combined_hash(
-            circular_deps, paths, url_positions_dict, hashed_files
+            circular_deps, paths, substitutions_dict, hashed_files
         )
 
         # Second pass: Create hashed filenames using the group hash
@@ -427,31 +428,26 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
         # Third pass: Process all URLs (including circular ones) and save files
         for name in circular_deps:
-            try:
-                content = original_contents[name]
+            content = original_contents[name]
 
-                combined_hashes = {**hashed_files, **circular_hashes}
-                content = self._process_file_content(
-                    name, content, url_positions_dict.get(name, []), combined_hashes
-                )
+            combined_hashes = {**hashed_files, **circular_hashes}
+            content = self._process_file_content(
+                name, content, substitutions_dict.get(name, []), combined_hashes
+            )
 
-                # Get the hashed name for this file
-                hash_key = self.hash_key(self.clean_name(name))
-                hashed_name = circular_hashes[hash_key]
+            # Get the hashed name for this file
+            hash_key = self.hash_key(self.clean_name(name))
+            hashed_name = circular_hashes[hash_key]
 
-                # Save the processed content to the hashed filename
-                content_file = ContentFile(content.encode())
-                if self.exists(hashed_name):
-                    self.delete(hashed_name)
-                self._save(hashed_name, content_file)
-                yield name, hashed_name
-
-            except ValueError as exc:
-                exc = self._make_helpful_exception(exc, name)
-                raise ProcessingException(exc, name)
+            # Save the processed content to the hashed filename
+            content_file = ContentFile(content.encode())
+            if self.exists(hashed_name):
+                self.delete(hashed_name)
+            self._save(hashed_name, content_file)
+            yield name, hashed_name
 
     def _calculate_combined_hash(
-        self, circular_deps, paths, url_positions_dict, hashed_files
+        self, circular_deps, paths, substitutions_dict, hashed_files
     ):
         """
         Return a hash of the combined content from all circular dependencies
@@ -466,33 +462,25 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
             with storage.open(path) as original_file:
                 if hasattr(original_file, "seek"):
                     original_file.seek(0)
+                content = original_file.read().decode("utf-8")
 
-                try:
-                    content = original_file.read().decode("utf-8")
-                    original_contents[name] = content
+                original_contents[name] = content
 
-                    # Filter URL positions to only non-circular dependencies
-                    non_circular_positions = []
-                    for url, pos in url_positions_dict.get(name, []):
-                        target = self._get_target_name(url, name)
-                        if target not in circular_deps:
-                            non_circular_positions.append((url, pos))
+                # Filter URL positions to only non-circular dependencies
+                non_circular_positions = []
+                for url, pos in substitutions_dict.get(name, []):
+                    target = self._get_target_name(url, name)
+                    if target not in circular_deps:
+                        non_circular_positions.append((url, pos))
+                # Replace all non-circular URLs first
+                if non_circular_positions:
+                    content = self._process_file_content(
+                        name, content, non_circular_positions, hashed_files
+                    )
 
-                    # Replace all non-circular URLs first
-                    if non_circular_positions:
-                        content = self._process_file_content(
-                            name, content, non_circular_positions, hashed_files
-                        )
-
-                    # Store the processed content for the second pass
-                    # We haven't actually saved these changes to disk
-                    processed_contents[name] = content
-
-                except UnicodeDecodeError as exc:
-                    raise ProcessingException(exc, name)
-                except ValueError as exc:
-                    exc = self._make_helpful_exception(exc, name)
-                    raise ProcessingException(exc, name)
+                # Store the processed content for the second pass
+                # We haven't actually saved these changes to disk
+                processed_contents[name] = content
 
         # Calculate a stable hash for all circular dependencies combined
         combined_content = "".join(
