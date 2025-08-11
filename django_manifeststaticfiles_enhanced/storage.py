@@ -112,9 +112,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         """
 
         graph_sorter = TopologicalSorter()
-        adjustable_paths = [
-            path for path in paths if matches_patterns(path, ["*.css", "*.js"])
-        ]
+        adjustable_paths = substitutions_dict.keys()
         non_adjustable = set(paths.keys()) - set(adjustable_paths)
 
         # build the graph based on the substitutions_dict
