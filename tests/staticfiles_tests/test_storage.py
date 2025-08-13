@@ -813,6 +813,15 @@ class JSModuleImportAggregationManifestStorage(EnhancedManifestStaticFilesStorag
 class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase):
     hashed_file_path = hashed_file_path
 
+    def _get_filename_path(self, filename):
+        return os.path.join(self._temp_dir, "test", filename)
+
+    def setUp(self):
+        super().setUp()
+        self._temp_dir = temp_dir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(temp_dir, "test"))
+        self.addCleanup(shutil.rmtree, temp_dir)
+
     def test_module_import(self):
         relpath = self.hashed_file_path("cached/module.js")
         self.assertEqual(relpath, "cached/module.5960f712d6bb.js")
@@ -876,6 +885,65 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
             for module_import in tests:
                 with self.subTest(module_import=module_import):
                     self.assertIn(module_import, content)
+
+    def test_template_literal_with_variables(self):
+        """Test that template literals with variables raise an appropriate error."""
+        # Create initial static files.
+        file_contents = (
+            ("dynamic_import.js", "import(`./${module_name}`);"),
+            ("module.js", "this"),
+        )
+        for filename, content in file_contents:
+            with open(self._get_filename_path(filename), "w") as f:
+                f.write(content)
+
+        with self.modify_settings(STATICFILES_DIRS={"append": self._temp_dir}):
+            finders.get_finder.cache_clear()
+            err = StringIO()
+            # Expect ValueError with message about template literals
+            error_message = "Found a template literal with a variable: ./${module_name}"
+
+            with self.assertRaisesMessage(ValueError, error_message):
+                call_command(
+                    "collectstatic", interactive=False, verbosity=0, stderr=err
+                )
+
+            if django.VERSION[:2] not in [(4, 2), (5, 0)]:
+                with override_settings(
+                    STORAGES={
+                        **settings.STORAGES,
+                        STATICFILES_STORAGE_ALIAS: {
+                            "BACKEND": (
+                                "django_manifeststaticfiles_enhanced.storage."
+                                "EnhancedManifestStaticFilesStorage"
+                            ),
+                            "OPTIONS": {
+                                "ignore_errors": [
+                                    "test/dynamic_import.js:./${module_name}"
+                                ],
+                            },
+                        },
+                    }
+                ):
+                    call_command(
+                        "collectstatic", interactive=False, verbosity=0, stderr=err
+                    )
+                    relpath = self.hashed_file_path("test/dynamic_import.js")
+                    with storage.staticfiles_storage.open(relpath) as relfile:
+                        content = relfile.read()
+                        self.assertIn(b"./${module_name}", content)
+
+            # Change the contents of the dynamic_import file.
+            # variables in the querystring are okay
+            with open(self._get_filename_path("dynamic_import.js"), "w+b") as f:
+                f.write(b"import(`module.js?t=${Date.now()}`);")
+
+            # a second collectstatic.
+            call_command("collectstatic", interactive=False, verbosity=0, stderr=err)
+            relpath = self.hashed_file_path("test/dynamic_import.js")
+            with storage.staticfiles_storage.open(relpath) as relfile:
+                content = relfile.read()
+                self.assertIn(b"module.9e925e9341b4.js", content)
 
 
 class CustomManifestStorage(EnhancedManifestStaticFilesStorage):
@@ -1118,7 +1186,7 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                 relative paths which might be pointing to the wrong location.
                 It is possible to ignore this error by pasing the OPTIONS:
                 {{
-                    "ignore_errors": [{filename}:{url}]
+                    "ignore_errors": ["{filename}:{url}"]
                 }}
                 """
             )
@@ -1232,65 +1300,6 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                     content = relfile.read()
                     self.assertIn(b"/static/test/xyz.png", content)
                     self.assertIn(b"foo.acbd18db4cc2.png", content)
-
-    def test_template_literal_with_variables(self):
-        """Test that template literals with variables raise an appropriate error."""
-        # Create initial static files.
-        file_contents = (
-            ("dynamic_import.js", "import(`./${module_name}`);"),
-            ("module.js", "this"),
-        )
-        for filename, content in file_contents:
-            with open(self._get_filename_path(filename), "w") as f:
-                f.write(content)
-
-        with self.modify_settings(STATICFILES_DIRS={"append": self._temp_dir}):
-            finders.get_finder.cache_clear()
-            err = StringIO()
-            # Expect ValueError with message about template literals
-            error_message = "Found a template literal with a variable: ./${module_name}"
-
-            with self.assertRaisesMessage(ValueError, error_message):
-                call_command(
-                    "collectstatic", interactive=False, verbosity=0, stderr=err
-                )
-
-            if django.VERSION[:2] not in [(4, 2), (5, 0)]:
-                with override_settings(
-                    STORAGES={
-                        **settings.STORAGES,
-                        STATICFILES_STORAGE_ALIAS: {
-                            "BACKEND": (
-                                "django_manifeststaticfiles_enhanced.storage."
-                                "EnhancedManifestStaticFilesStorage"
-                            ),
-                            "OPTIONS": {
-                                "ignore_errors": [
-                                    "test/dynamic_import.js:./${module_name}"
-                                ],
-                            },
-                        },
-                    }
-                ):
-                    call_command(
-                        "collectstatic", interactive=False, verbosity=0, stderr=err
-                    )
-                    relpath = self.hashed_file_path("test/dynamic_import.js")
-                    with storage.staticfiles_storage.open(relpath) as relfile:
-                        content = relfile.read()
-                        self.assertIn(b"./${module_name}", content)
-
-            # Change the contents of the dynamic_import file.
-            # variables in the querystring are okay
-            with open(self._get_filename_path("dynamic_import.js"), "w+b") as f:
-                f.write(b"import(`module.js?t=${Date.now()}`);")
-
-            # a second collectstatic.
-            call_command("collectstatic", interactive=False, verbosity=0, stderr=err)
-            relpath = self.hashed_file_path("test/dynamic_import.js")
-            with storage.staticfiles_storage.open(relpath) as relfile:
-                content = relfile.read()
-                self.assertIn(b"module.9e925e9341b4.js", content)
 
     def test_circular_dependencies(self):
         """

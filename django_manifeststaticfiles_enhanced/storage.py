@@ -155,11 +155,19 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         ):
             return url_positions
 
+        # simple search rules out most js files quickly
         complex_adjustments = "import" in content or (
             "export" in content and "from" in content
         )
 
         if not complex_adjustments:
+            return url_positions
+
+        # The simple search still leave lots of falst positives,
+        # like the words important or exports
+        # Match for import export syntax to futher reduce the need
+        # to run the lexer, should cut out 90% of false positives
+        if not self.import_export_pattern.search(content):
             return url_positions
 
         try:
@@ -177,13 +185,25 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
 
         return url_positions
 
+    import_export_pattern = re.compile(
+        # check for import statements
+        r"((^|[;}]|\*/)\s*import\b|"
+        # check for dynamic imports
+        r"import\s\(|"
+        # check for edge case with comment in between import and opening bracket
+        r"import\s*/\*.*?\*/\s*\(|"
+        # check for the word export must be followed
+        r"\bexport[\s{/*])",
+        re.MULTILINE,
+    )
+
     def _process_css_urls(self, name, content):
         """Process CSS url & import statements."""
         url_positions = []
         if not matches_patterns(name, ("*.css",)):
             return url_positions
         search_content = content.lower()
-        complex_adjustments = "url(" in search_content or "import" in search_content
+        complex_adjustments = "url(" in search_content or "@import" in search_content
 
         if not complex_adjustments:
             return url_positions
@@ -523,7 +543,7 @@ class EnhancedHashedFilesMixin(HashedFilesMixin):
         relative paths which might be pointing to the wrong location.
         It is possible to ignore this error by pasing the OPTIONS:
         {{
-            "ignore_errors": [{filename}:{url}]
+            "ignore_errors": ["{filename}:{url}"]
         }}
         """
     )
