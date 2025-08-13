@@ -471,6 +471,11 @@ def _extract_import_details(tokens, i, should_ignore_url):
     if i > 0 and tokens[i - 1][0] == "punct" and tokens[i - 1][1] == ".":
         return False
 
+    # Check if this is actually a key in a dictionary
+    # by looking at the next token if it's a : then this is a key
+    if i + 1 < len(tokens) and tokens[i + 1][0] == "punct" and tokens[i + 1][1] == ":":
+        return False
+
     # check for plain import and function imports first
     # import "module-name";
     if i + 1 < len(tokens) and tokens[i + 1][0] == "string":
