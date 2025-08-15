@@ -71,7 +71,7 @@ STORAGES = {
 
 #### JavaScript Module Support ([ticket_34322](https://code.djangoproject.com/ticket/34322))
 
-Disable ES module import/export processing:
+Enable ES module import/export processing:
 
 ```python
 # settings.py
@@ -79,7 +79,7 @@ STORAGES = {
     "staticfiles": {
         "BACKEND": "django_manifeststaticfiles_enhanced.storage.EnhancedManifestStaticFilesStorage",
         "OPTIONS": {
-            "support_js_module_import_aggregation": False,
+            "support_js_module_import_aggregation": True,
         },
     },
 }
@@ -121,11 +121,11 @@ Reduces unnecessary file operations during `collectstatic`:
 
 ### JavaScript Module Support ([ticket_34322](https://code.djangoproject.com/ticket/34322))
 
-Enabled by default:
+JS import/export processing uses a proper lexer instead of regex, providing:
 
-- Processes ES6 import/export statements
-- Handles dynamic imports
-- Updates module paths to hashed versions
+- Covers ES6 import/export statements and dynamic imports
+- Ignores statements in comments and strings
+- Supports assert statements in imports, `import sheet from './styles.css' assert { type: 'css' };`
 
 Example JavaScript that gets processed:
 
@@ -208,6 +208,10 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the BSD 3-Clause License - the same license as Django.
 
 ## Changelog
+
+### 0.5.0
+
+- Made support of js import/export statements opt in
 
 ### 0.4.0
 

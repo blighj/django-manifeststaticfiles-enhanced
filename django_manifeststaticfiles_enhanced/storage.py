@@ -29,7 +29,6 @@ class ProcessingException(Exception):
 
 
 class EnhancedHashedFilesMixin(HashedFilesMixin):
-    support_js_module_import_aggregation = True
 
     def post_process(self, paths, dry_run=False, **options):
         """
