@@ -14,6 +14,7 @@ This package includes several improvements to Django's `ManifestStaticFilesStora
 - **[ticket_21080](https://code.djangoproject.com/ticket/21080)**: CSS lexer for better URL parsing in CSS files
 - **[ticket_34322](https://code.djangoproject.com/ticket/34322)**: JsLex for ES module support in JavaScript files
 - **[ticket_28200](https://code.djangoproject.com/ticket/28200)**: Optimized storage to avoid unnecessary file operations for unchanged files
+- **staticjs**: JavaScript utility to access hashed static file paths in JavaScript
 
 ## Compatibility
 
@@ -153,6 +154,48 @@ keep_original_files = False
 # Results in: style.abc123.css only
 ```
 
+### JavaScript Static File Access (staticjs)
+
+Access hashed static file paths in JavaScript using the `django.static()` function:
+Add django-manifeststaticfiles-enhanced to your INSTALLED_APPS
+
+```html
+<!-- Include the django.js file in your template -->
+{% load staticjs $}
+
+{% include_staticjs %}
+
+<!-- Now you can use django.static() in your JavaScript -->
+<script>
+  // In development mode: returns "images/logo.png"
+  // In production mode: returns "images/logo.123abc.png"
+  const logoPath = django.static("images/logo.png");
+
+  // Use this path in your DOM manipulations
+  document.getElementById("logo").src = logoPath;
+</script>
+```
+
+This feature is automatically added during collectstatic. The hashed version will be created and referenced correctly, similar to how Django's static template tag works.
+
+#### Configuration
+
+Customize the staticjs behavior using these options:
+
+```python
+# settings.py
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "django_manifeststaticfiles_enhanced.storage.EnhancedManifestStaticFilesStorage",
+        "OPTIONS": {
+            # Specify which file patterns to exclude from the static dictionary
+            # By default, CSS/JS/SCSS/LESS/TS files are excluded to keep the dictionary small
+            "staticjs_exclude_patterns": ["*.js", "*.css", "*.scss", "*.less", "*.ts"],
+        },
+    },
+}
+```
+
 ### Ignoring specific errors
 
 Ignore specific errors during post-processing with the `ignore_errors` option. This is useful when you have third-party libraries that reference non-existent files or use dynamic path construction that can't be properly parsed.
@@ -208,6 +251,10 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the BSD 3-Clause License - the same license as Django.
 
 ## Changelog
+
+### 0.6.0 (Unreleased)
+
+- Added JavaScript static file access utility (`staticjs/django.js`)
 
 ### 0.5.0
 
