@@ -103,5 +103,5 @@ class NoneHashStorage(EnhancedManifestStaticFilesStorage):
         return None
 
 
-class NoPostProcessReplacedPathStorage(EnhancedManifestStaticFilesStorage):
-    max_post_process_passes = 0
+class JSModuleImportAggregationManifestStorage(EnhancedManifestStaticFilesStorage):
+    support_js_module_import_aggregation = True

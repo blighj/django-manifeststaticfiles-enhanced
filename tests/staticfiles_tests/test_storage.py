@@ -60,6 +60,23 @@ class TestHashedFiles:
         self.assertStaticRenders("path/?query", "/static/path/?query")
         self.assertPostCondition()
 
+    def test_raises_common_errors(self):
+        self.assertStaticRaises(ValueError, "/test/file.txt", "/static/test/file.txt")
+        self.assertStaticRaises(ValueError, r"test\file.txt", "/static/test/file.txt")
+        self.assertStaticRaises(ValueError, "test/file.TXT", "/static/test/file.txt")
+        self.assertStaticRaises(
+            ValueError, "does/not/exist.png", "/static/does/not/exist.png"
+        )
+
+    @override_settings(DEBUG=True)
+    def test_raises_common_errors_in_debug(self):
+        self.assertStaticRaises(ValueError, "/test/file.txt", "/static/test/file.txt")
+        self.assertStaticRaises(ValueError, r"test\file.txt", "/static/test/file.txt")
+        self.assertStaticRaises(ValueError, "test/file.TXT", "/static/test/file.TXT")
+        self.assertStaticRaises(
+            ValueError, "does/not/exist.png", "/static/does/not/exist.png"
+        )
+
     def test_template_tag_simple_content(self):
         relpath = self.hashed_file_path("cached/styles.css")
         self.assertEqual(relpath, "cached/styles.5e0040571e1a.css")
@@ -747,23 +764,6 @@ class TestCollectionNoneHashStorage(CollectionTestCase):
     STORAGES={
         **settings.STORAGES,
         STATICFILES_STORAGE_ALIAS: {
-            "BACKEND": "staticfiles_tests.storage.NoPostProcessReplacedPathStorage",
-        },
-    }
-)
-class TestCollectionNoPostProcessReplacedPaths(CollectionTestCase):
-    run_collectstatic_in_setUp = False
-
-    def test_collectstatistic_no_post_process_replaced_paths(self):
-        stdout = StringIO()
-        self.run_collectstatic(verbosity=1, stdout=stdout)
-        self.assertIn("post-processed", stdout.getvalue())
-
-
-@override_settings(
-    STORAGES={
-        **settings.STORAGES,
-        STATICFILES_STORAGE_ALIAS: {
             "BACKEND": "staticfiles_tests.storage.SimpleStorage",
         },
     }
@@ -795,17 +795,12 @@ class TestCollectionSimpleStorage(CollectionTestCase):
             self.assertIn(b"other.deploy12345.css", content)
 
 
-class JSModuleImportAggregationManifestStorage(EnhancedManifestStaticFilesStorage):
-    support_js_module_import_aggregation = True
-
-
 @override_settings(
     STORAGES={
         **settings.STORAGES,
         STATICFILES_STORAGE_ALIAS: {
             "BACKEND": (
-                "staticfiles_tests.test_storage."
-                "JSModuleImportAggregationManifestStorage"
+                "staticfiles_tests.storage." "JSModuleImportAggregationManifestStorage"
             ),
         },
     }
@@ -1526,4 +1521,27 @@ class TestEnhancedManifestStorageOptions(CollectionTestCase):
         original_css_files = [f for f in cached_files if f == "styles.css"]
         self.assertEqual(
             len(original_css_files), 0, "Original CSS file should have been deleted"
+        )
+
+
+@override_settings(
+    STORAGES={
+        **settings.STORAGES,
+        STATICFILES_STORAGE_ALIAS: {
+            "BACKEND": (
+                "django_manifeststaticfiles_enhanced.storage."
+                "EnhancedManifestStaticFilesStorage"
+            ),
+        },
+    }
+)
+class TestTestingManifestStaticFilesStorage(CollectionTestCase):
+    run_collectstatic_in_setUp = False
+
+    def test_raises_common_errors(self):
+        self.assertStaticRaises(ValueError, "/test/file.txt", "/static/test/file.txt")
+        self.assertStaticRaises(ValueError, r"test\file.txt", "/static/test/file.txt")
+        self.assertStaticRaises(ValueError, "test/file.TXT", "/static/test/file.txt")
+        self.assertStaticRaises(
+            ValueError, "does/not/exist.png", "/static/does/not/exist.png"
         )
