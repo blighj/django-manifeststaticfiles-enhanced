@@ -14,6 +14,7 @@ This package includes several improvements to Django's `ManifestStaticFilesStora
 - **[ticket_21080](https://code.djangoproject.com/ticket/21080)**: CSS lexer for better URL parsing in CSS files
 - **[ticket_34322](https://code.djangoproject.com/ticket/34322)**: JsLex for ES module support in JavaScript files
 - **[ticket_28200](https://code.djangoproject.com/ticket/28200)**: Optimized storage to avoid unnecessary file operations for unchanged files
+- **[ticket_26329](https://code.djangoproject.com/ticket/26329)**: Ensure production errors are rasied in development too
 
 ## Compatibility
 
@@ -176,6 +177,27 @@ STORAGES = {
 
 Patterns support wildcard matching with `*` to match any number of characters.
 
+### Catching common errors between development and production
+
+The `{% static %}` tag does not use the manifest file in development, when `DEBUG=True`, instead it defaults to `StaticFilesStorage`. This can lead to errors that only show up in staging/production enviornments, because some static paths will work for `StaticFilesStorage` but not be valid paths in the manifest file and cause errors when `DEBUG=False`.  This class adds extra validation when `DEBUG=True` so that the errors can be caught earlier.
+This package also includes a special storage class, `TestingManifestStaticFilesStorage`, for testing that uses `StaticFilesStorage` with the validation checks.
+
+```python
+# settings.py for testing
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "django_manifeststaticfiles_enhanced.storage.TestingManifestStaticFilesStorage",
+    },
+}
+```
+
+The `TestingManifestStaticFilesStorage` includes the `DebugValidationMixin` which performs the following validations:
+
+1. Rejects paths that start with `/` (e.g., `/static/file.css`)
+2. Rejects paths that use backslashes (e.g., `path\to\file.css`)
+3. Checks if the file actually exists in your static files
+4. Detects case sensitivity issues that might work in development but fail in production
+
 ## Running Tests
 
 ```bash
@@ -208,6 +230,11 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the BSD 3-Clause License - the same license as Django.
 
 ## Changelog
+
+### 0.6.0
+
+- Surface exceptions with `{% static %}` tag when `DEBUG=True`
+- Added TestingManifestStaticFilesStorage for use in tests to Surface exceptions when `DEBUG=False`
 
 ### 0.5.0
 

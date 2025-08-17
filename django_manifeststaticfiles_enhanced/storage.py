@@ -6,6 +6,7 @@ from graphlib import CycleError, TopologicalSorter
 from urllib.parse import unquote, urldefrag
 
 from django.conf import settings
+from django.contrib.staticfiles import finders
 from django.contrib.staticfiles.storage import (
     HashedFilesMixin,
     ManifestFilesMixin,
@@ -21,6 +22,54 @@ from django_manifeststaticfiles_enhanced.jslex import (
 )
 
 
+class DebugValidationMixin:
+    """
+    Mixin to validate static file paths that though valid for
+    StaticFileStorage are not valid for ManifestStaticFileStorage
+    """
+
+    def _validate_url(self, name, force=False):
+        """
+        Return the URL for a static file.
+
+        This will validate the static path to catch common issues that would
+        prevent the manifest key lookup, normally these would only appear in
+        production when debug=True, this mixin allows us to cover them in
+        development and testing.
+        """
+
+        # 1. Check for paths starting with /
+        if name.startswith("/"):
+            raise ValueError(f"Static paths should not start with '/' ({name}). ")
+
+        # 2. Check for paths using backslashes
+        if "\\" in name:
+            raise ValueError(f"Static paths should not use backslashes ({name}). ")
+
+        # Clean and normalize the path for further checks
+        normalized_path = posixpath.normpath(name)
+
+        # 3 Check if the file exists
+        absolute_path = finders.find(normalized_path)
+        if not absolute_path and self.manifest_strict:
+            raise ValueError(f"Static file not found ({name}). ")
+
+        # 4 Check for case sensitivity issues
+        file_name = os.path.basename(name)
+        dir_path = os.path.dirname(absolute_path)
+
+        if dir_path and os.path.exists(dir_path):
+            # Get actual files in the directory with their exact case
+            actual_files = os.listdir(dir_path)
+            if file_name not in actual_files and file_name.lower() in [
+                f.lower() for f in actual_files
+            ]:
+                raise ValueError(f"Static file has incorrect case ({name}). ")
+
+        # Call the parent url method
+        return super().url(name, force)
+
+
 class ProcessingException(Exception):
     def __init__(self, e, file_name):
         self.file_name = file_name
@@ -28,7 +77,12 @@ class ProcessingException(Exception):
         super().__init__(e.args[0] if len(e.args) else "")
 
 
-class EnhancedHashedFilesMixin(HashedFilesMixin):
+class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
+
+    def url(self, name, force=False):
+        if settings.DEBUG and not force:
+            return self._validate_url(name, force)
+        return super().url(name, force)
 
     def post_process(self, paths, dry_run=False, **options):
         """
@@ -675,3 +729,26 @@ class EnhancedManifestStaticFilesStorage(
         else:
             self.ignore_errors = []
         super().__init__(location, base_url, *args, **kwargs)
+
+
+class TestingManifestStaticFilesStorage(DebugValidationMixin, StaticFilesStorage):
+    def __init__(
+        self,
+        location=None,
+        base_url=None,
+        support_js_module_import_aggregation=None,
+        manifest_name=None,
+        manifest_strict=None,
+        keep_original_files=None,
+        ignore_errors=None,
+        *args,
+        **kwargs,
+    ):
+        if manifest_strict is not None:
+            self.manifest_strict = manifest_strict
+        else:
+            self.manifest_strict = True
+        super().__init__(location, base_url, *args, **kwargs)
+
+    def url(self, name, force=False):
+        return self._validate_url(name, force)
