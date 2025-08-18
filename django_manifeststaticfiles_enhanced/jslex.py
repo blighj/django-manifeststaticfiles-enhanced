@@ -447,7 +447,11 @@ def find_import_export_strings(file_contents, should_ignore_url=None):
     lexer = JsLexer()
     tokens = list(lexer.lex(file_contents))
     # remove all whitespace
-    tokens = [token_tuple for token_tuple in tokens if token_tuple[0] != "ws"]
+    tokens = [
+        token_tuple
+        for token_tuple in tokens
+        if token_tuple[0] not in ["ws", "comment", "linecomment"]
+    ]
     matches = []
 
     for i, (name, value, _) in enumerate(tokens):
@@ -496,6 +500,8 @@ def _extract_import_details(tokens, i, should_ignore_url):
     # import defaultExport, * as name from "module-name";
     else:
         for j in range(i + 1, len(tokens)):
+            if tokens[j][0] == "punct" and tokens[j][1] == ";":
+                return False
             if tokens[j][0] == "id" and tokens[j][1] == "from" and j + 1 < len(tokens):
                 return _format_match(tokens[j + 1], should_ignore_url)
     return False
@@ -511,6 +517,8 @@ def _extract_export_details(tokens, i, should_ignore_url):
 
     if i + 1 < len(tokens) and tokens[i + 1][1] == "*":
         for j in range(i + 1, len(tokens)):
+            if tokens[j][0] == "punct" and tokens[j][1] == ";":
+                return False
             if tokens[j][0] == "id" and tokens[j][1] == "from" and j + 1 < len(tokens):
                 return _format_match(tokens[j + 1], should_ignore_url)
 
@@ -521,14 +529,13 @@ def _extract_export_details(tokens, i, should_ignore_url):
     # find the end of the } and check if there is a from module statement
     elif i + 1 < len(tokens) and i + 1 < len(tokens) and tokens[i + 1][1] == "{":
         for j in range(i + 1, len(tokens)):
-            if (
-                tokens[j][0] == "punct"
-                and tokens[j][1] == "}"
-                and j + 2 < len(tokens)
-                and tokens[j + 1][0] == "id"
-                and tokens[j + 1][1] == "from"
-            ):
-                return _format_match(tokens[j + 2], should_ignore_url)
+            if tokens[j][0] == "punct" and tokens[j][1] == ";":
+                return False
+            if tokens[j][0] == "punct" and tokens[j][1] == "}" and j + 2 < len(tokens):
+                if tokens[j + 1][0] == "id" and tokens[j + 1][1] == "from":
+                    return _format_match(tokens[j + 2], should_ignore_url)
+                else:
+                    return False
     return False
 
 

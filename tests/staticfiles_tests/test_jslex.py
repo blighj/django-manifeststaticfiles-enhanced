@@ -531,6 +531,15 @@ class FindImportExportStringsTest(SimpleTestCase):
         js = "export const value = 42;"
         imports = find_import_export_strings(js)
         self.assertEqual(len(imports), 0)
+        js = 'export const value = 42; export { helper } from "./helper.js";'
+        imports = find_import_export_strings(js)
+        self.assertEqual(len(imports), 1)
+        js = 'export { variable }; export { helper } from "./helper.js";'
+        imports = find_import_export_strings(js)
+        self.assertEqual(len(imports), 1)
+        js = 'export { variable }\n export { helper } from "./helper.js";'
+        imports = find_import_export_strings(js)
+        self.assertEqual(len(imports), 1)
 
     def test_import_with_comments(self):
         """Test import statements with comments."""
@@ -541,11 +550,28 @@ class FindImportExportStringsTest(SimpleTestCase):
            import { Component } from "react.js";
         */
         import { Component } from "react.js";
+        import { Component } from /* "oldreact.js" */ "react.js";
+        import(/* "oldreact.js" */ "react.js")
         """
         imports = find_import_export_strings(js)
-        self.assertEqual(len(imports), 2)
+        self.assertEqual(len(imports), 4)
         import_values = [imp[0] for imp in imports]
-        self.assertEqual(import_values.count("react.js"), 2)
+        self.assertEqual(import_values.count("react.js"), 4)
+
+    def test_export_with_comments(self):
+        """Test export statements with comments."""
+        js = """
+        // export * from "module.js";
+        export * from "module.js";
+        /* Multi-line comment
+           export * from "module.js";
+        */
+        import { Component } from /* "oldmodule.js" */ "module.js";
+        """
+        exports = find_import_export_strings(js)
+        self.assertEqual(len(exports), 2)
+        export_values = [imp[0] for imp in exports]
+        self.assertEqual(export_values.count("module.js"), 2)
 
     def test_no_imports(self):
         """Test JavaScript with no import/export statements."""
@@ -554,6 +580,15 @@ class FindImportExportStringsTest(SimpleTestCase):
         function test() {
             return x * 2;
         }
+        """
+        imports = find_import_export_strings(js)
+        self.assertEqual(len(imports), 0)
+
+    def test_poor_syntax(self):
+        """Test that poor syntax is ignored."""
+        js = """
+        import utils for "./utils.js";
+        export *;
         """
         imports = find_import_export_strings(js)
         self.assertEqual(len(imports), 0)
