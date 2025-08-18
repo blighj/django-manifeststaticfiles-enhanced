@@ -558,6 +558,21 @@ class FindImportExportStringsTest(SimpleTestCase):
         import_values = [imp[0] for imp in imports]
         self.assertEqual(import_values.count("react.js"), 4)
 
+    def test_export_with_comments(self):
+        """Test export statements with comments."""
+        js = """
+        // export * from "module.js";
+        export * from "module.js";
+        /* Multi-line comment
+           export * from "module.js";
+        */
+        import { Component } from /* "oldmodule.js" */ "module.js";
+        """
+        exports = find_import_export_strings(js)
+        self.assertEqual(len(exports), 2)
+        export_values = [imp[0] for imp in exports]
+        self.assertEqual(export_values.count("module.js"), 2)
+
     def test_no_imports(self):
         """Test JavaScript with no import/export statements."""
         js = """
