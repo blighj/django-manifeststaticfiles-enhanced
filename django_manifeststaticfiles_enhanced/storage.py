@@ -90,17 +90,34 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
         Uses a dependency graph approach to minimize the number of passes required.
         """
-        # don't even dare to process the files if we're in dry run mode
-        if dry_run:
-            return
-
-        # Process files using the dependency graph
         try:
+            # if we're in dry run, still find urls and raise any exceptions
+            if dry_run:
+                self._test_url_substitutions(paths)
+                return
+
+            # Process files using the dependency graph
             yield from self._post_process(paths)
         except ProcessingException as exc:
             # django's collectstatic management command is written to expect
             # the exception to be returned in this format
             yield exc.file_name, None, exc.original_exception
+
+    def _test_url_substitutions(self, paths):
+        """
+        Process the paths for url suvstitutions and find exceptions
+        """
+        substitutions_dict = self._find_substitutions(paths)
+        for name, url_positions in substitutions_dict.items():
+            for url, _ in url_positions:
+                try:
+                    self._adjust_url(url, name, paths)
+                except ValueError as exc:
+                    if not self._should_ignore_url(name, url):
+                        message = exc.args[0] if len(exc.args) else ""
+                        message = f"Error processing the url {url}\n{message}"
+                        exc = self._make_helpful_exception(ValueError(message), name)
+                        raise ProcessingException(exc, name)
 
     def _post_process(self, paths):
         """
