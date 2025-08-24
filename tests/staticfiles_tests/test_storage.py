@@ -28,7 +28,7 @@ from .settings import TEST_ROOT
 
 def hashed_file_path(test, path):
     fullpath = test.render_template(test.static_template_snippet(path))
-    return fullpath[len(settings.STATIC_URL) :]
+    return fullpath.removeprefix(settings.STATIC_URL)
 
 
 class TestHashedFiles:
@@ -1188,7 +1188,7 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
             err_msg = _expected_error_msg.format(
                 missing="test/xyz.png",
                 storage=configured_storage._wrapped,
-                filename="test/bar.css",
+                filename=os.path.join("test", "bar.css"),
                 ext="CSS",
                 url="xyz.png",
             )
@@ -1200,6 +1200,7 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
             if django.VERSION[:2] in [(4, 2), (5, 0)]:
                 return
 
+            test_path = os.path.join("test", "bar.css")
             with override_settings(
                 STORAGES={
                     **settings.STORAGES,
@@ -1209,7 +1210,7 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                             "EnhancedManifestStaticFilesStorage"
                         ),
                         "OPTIONS": {
-                            "ignore_errors": ["test/bar.css:xyz.png"],
+                            "ignore_errors": [f"{test_path}:xyz.png"],
                         },
                     },
                 }
@@ -1282,7 +1283,7 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                             "EnhancedManifestStaticFilesStorage"
                         ),
                         "OPTIONS": {
-                            "ignore_errors": [" test/bar.css : /static/test/xyz.png "],
+                            "ignore_errors": [f" {test_path} : /static/test/xyz.png "],
                         },
                     },
                 }

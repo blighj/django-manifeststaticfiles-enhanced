@@ -365,7 +365,10 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         Get the target file name from a URL and source file name
         """
         url_path, _ = urldefrag(url)
-        return posixpath.normpath(self._get_base_target_name(url_path, source_name))
+        path = posixpath.normpath(self._get_base_target_name(url_path, source_name))
+        if os.sep != "/":
+            path = path.replace("/", os.sep)
+        return path
 
     def _get_base_target_name(self, url_path, source_name):
         """
@@ -375,7 +378,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         if url_path.startswith("/"):
             # Otherwise the condition above would have returned prematurely.
             assert url_path.startswith(settings.STATIC_URL)
-            target_name = url_path[len(settings.STATIC_URL) :]
+            target_name = url_path.removeprefix(settings.STATIC_URL)
         else:
             # We're using the posixpath module to mix paths and URLs conveniently.
             source_name = (
