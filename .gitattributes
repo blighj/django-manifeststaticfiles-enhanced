@@ -1,0 +1,7 @@
+# Normalize line endings to avoid spurious failures in the test suite on Windows.
+*html text eol=lf
+*css text eol=lf
+*js text eol=lf
+tests/staticfiles_tests/project/documents/test/*txt text eol=lf
+tests/staticfiles_tests/project/documents/cached/*css text eol=lf
+tests/staticfiles_tests/project/documents/cached/*js text eol=lf
