@@ -1196,6 +1196,14 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                 call_command(
                     "collectstatic", interactive=False, verbosity=0, stderr=err
                 )
+            with self.assertRaisesMessage(ValueError, err_msg):
+                call_command(
+                    "collectstatic",
+                    dry_run=True,
+                    interactive=False,
+                    verbosity=0,
+                    stderr=err,
+                )
 
             if django.VERSION[:2] in [(4, 2), (5, 0)]:
                 return
