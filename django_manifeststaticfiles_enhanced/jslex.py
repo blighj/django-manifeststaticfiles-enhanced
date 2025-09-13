@@ -453,6 +453,7 @@ def find_import_export_strings(file_contents, should_ignore_url=None):
         if token_tuple[0] not in ["ws", "comment", "linecomment"]
     ]
     matches = []
+    django_static_calls = []
 
     for i, (name, value, _) in enumerate(tokens):
         if name == "keyword" and value == "import":
@@ -464,8 +465,30 @@ def find_import_export_strings(file_contents, should_ignore_url=None):
             export_details = _extract_export_details(tokens, i, should_ignore_url)
             if export_details:
                 matches.append(export_details)
+        elif name == "id" and value == "django":
+            export_details = _extract_django_static_calls(tokens, i, should_ignore_url)
+            if export_details:
+                django_static_calls.append(export_details)
 
-    return matches
+    return matches, django_static_calls
+
+
+def _extract_django_static_calls(tokens, i, should_ignore_url):
+    if (
+        i + 3 < len(tokens)
+        and tokens[i + 1][0] == "punct"
+        and tokens[i + 1][1] == "."
+        and tokens[i + 2][0] == "id"
+        and tokens[i + 2][1] == "static"
+        and tokens[i + 3][0] == "punct"
+        and tokens[i + 3][1] == "("
+    ):
+        # Find the string argument
+        arg_index = i + 4
+        if arg_index < len(tokens) and tokens[arg_index][0] == "string":
+            # Extract the string without quotes
+            return _format_match(tokens[arg_index], should_ignore_url)
+    return False
 
 
 def _extract_import_details(tokens, i, should_ignore_url):
