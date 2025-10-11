@@ -3,6 +3,7 @@ import posixpath
 import re
 import textwrap
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from graphlib import CycleError, TopologicalSorter
 from urllib.parse import unquote, urldefrag
 
@@ -25,6 +26,9 @@ from django_manifeststaticfiles_enhanced.jslex import (
 
 # Global lock for directory creation to ensure thread-safety across all instances
 _makedirs_lock = threading.Lock()
+
+# Global lock for hashed_files dictionary updates during parallel post-processing
+_hashed_files_lock = threading.Lock()
 
 
 class ThreadSafeStorageMixin:
@@ -215,12 +219,55 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
     def _post_process(self, paths):
         """
         Process static files using a unified dependency graph approach.
+
+        This method processes files in three phases:
+        1. Non-adjustable files in parallel (images, fonts, etc. - no dependencies)
+        2. Linear dependencies sequentially (CSS/JS with dependencies)
+        3. Circular dependencies with special handling
         """
         hashed_files = {}
 
         substitutions_dict = self._find_substitutions(paths)
-        linear_deps, circular_deps = self._topological_sort(paths, substitutions_dict)
-        # First process the linear dependencies
+        non_adjustable, linear_deps, circular_deps = self._topological_sort(
+            paths, substitutions_dict
+        )
+
+        # Phase 1: Process non-adjustable files in parallel
+        # These are files with no URL substitutions (images, fonts, etc.)
+        # Use a default of 10 workers for post-processing
+        max_workers = getattr(self, "post_process_workers", 10)
+
+        if non_adjustable and max_workers > 1:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all non-adjustable files for parallel processing
+                futures = [
+                    executor.submit(
+                        self._process_file,
+                        name,
+                        paths[name],
+                        hashed_files,
+                        [],  # No substitutions for non-adjustable files
+                    )
+                    for name in non_adjustable
+                ]
+
+                # Collect results and update hashed_files with thread safety
+                for future in futures:
+                    name, hashed_name, processed = future.result()
+                    with _hashed_files_lock:
+                        hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
+                    yield name, hashed_name, processed
+        else:
+            # Fall back to sequential processing if max_workers=1 or no files
+            for name in non_adjustable:
+                name, hashed_name, processed = self._process_file(
+                    name, paths[name], hashed_files, []
+                )
+                hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
+                yield name, hashed_name, processed
+
+        # Phase 2: Process linear dependencies sequentially
+        # These files have dependencies and must be processed in order
         for name in linear_deps:
             name, hashed_name, processed = self._process_file(
                 name, paths[name], hashed_files, substitutions_dict.get(name, [])
@@ -228,7 +275,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
             yield name, hashed_name, processed
 
-        # Handle circular dependencies
+        # Phase 3: Handle circular dependencies
         if circular_deps:
             circular_hashes = self._process_circular_dependencies(
                 circular_deps, paths, substitutions_dict, hashed_files
@@ -272,6 +319,11 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         image.png is hashed before styles.css needs to replace it with
         image.hash.png in a url().
         Any circular dependencies found will be returned as a seperate list.
+
+        Returns a tuple of (non_adjustable, linear_deps, circular_deps) where:
+        - non_adjustable: Files that can be processed in parallel (no dependencies)
+        - linear_deps: Files with dependencies that must be processed sequentially
+        - circular_deps: Files with circular dependencies (special handling)
         """
 
         graph_sorter = TopologicalSorter()
@@ -304,10 +356,9 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             return len(name.split(os.sep))
 
         non_adjustable = sorted(list(non_adjustable), key=path_level, reverse=True)
-        linear_deps = list(non_adjustable) + linear_deps
-        circular_deps = set(adjustable_paths) - set(linear_deps)
+        circular_deps = set(adjustable_paths) - set(linear_deps) - set(non_adjustable)
 
-        return linear_deps, circular_deps
+        return non_adjustable, linear_deps, circular_deps
 
     def _process_js_modules(self, name, content):
         """Process JavaScript import/export statements."""
