@@ -2,9 +2,11 @@ import os
 import posixpath
 import re
 import textwrap
+import threading
 from graphlib import CycleError, TopologicalSorter
 from urllib.parse import unquote, urldefrag
 
+import django
 from django.conf import settings
 from django.contrib.staticfiles import finders
 from django.contrib.staticfiles.storage import (
@@ -20,6 +22,97 @@ from django_manifeststaticfiles_enhanced.jslex import (
     extract_css_urls,
     find_import_export_strings,
 )
+
+# Global lock for directory creation to ensure thread-safety across all instances
+_makedirs_lock = threading.Lock()
+
+
+class ThreadSafeStorageMixin:
+    """
+    Mixin to make FileSystemStorage thread-safe for parallel operations.
+
+    Django's FileSystemStorage._save() manipulates umask when creating directories,
+    which is a process-wide setting and not thread-safe. This mixin overrides _save()
+    to serialize directory creation operations while keeping file I/O parallel.
+    """
+
+    def _save(self, name, content):
+        """
+        Thread-safe version of _save that prevents race conditions in dir creation.
+
+        This completely replaces Django's _save to avoid the umask race condition.
+        """
+        from django.core.files import locks
+        from django.core.files.move import file_move_safe
+
+        full_path = self.path(name)
+        directory = os.path.dirname(full_path)
+
+        # Thread-safe directory creation - always lock to serialize umask manipulation
+        with _makedirs_lock:
+            try:
+                if self.directory_permissions_mode is not None:
+                    old_umask = os.umask(0o777 & ~self.directory_permissions_mode)
+                    try:
+                        os.makedirs(
+                            directory, self.directory_permissions_mode, exist_ok=True
+                        )
+                    finally:
+                        os.umask(old_umask)
+                    # CRITICAL: Always explicitly set permissions after makedirs!
+                    # Even when creating new directories, the mode parameter to
+                    # os.makedirs() is affected by the process umask. Since umask is
+                    # process-wide and can be modified by other threads, we must
+                    # explicitly chmod to guarantee exact permissions.
+                    os.chmod(directory, self.directory_permissions_mode)
+                else:
+                    os.makedirs(directory, exist_ok=True)
+            except FileExistsError:
+                raise FileExistsError("%s exists and is not a directory." % directory)
+
+        # File saving logic (copied from Django's FileSystemStorage._save)
+        # but without the directory creation part
+        while True:
+            try:
+                if hasattr(content, "temporary_file_path"):
+                    # Use file_move_safe for uploaded files with temp paths
+                    file_move_safe(content.temporary_file_path(), full_path)
+                else:
+                    # Stream the content to the file
+                    if django.VERSION[:2] in [(4, 2), (5, 0)]:
+                        open_flags = self.OS_OPEN_FLAGS
+                    else:
+                        open_flags = (
+                            os.O_WRONLY
+                            | os.O_CREAT
+                            | os.O_EXCL
+                            | getattr(os, "O_BINARY", 0)
+                        )
+                    fd = os.open(full_path, open_flags, 0o666)
+                    _file = None
+                    try:
+                        locks.lock(fd, locks.LOCK_EX)
+                        for chunk in content.chunks():
+                            if _file is None:
+                                mode = "wb" if isinstance(chunk, bytes) else "wt"
+                                _file = os.fdopen(fd, mode)
+                            _file.write(chunk)
+                    finally:
+                        locks.unlock(fd)
+                        if _file is not None:
+                            _file.close()
+                        else:
+                            os.close(fd)
+            except FileExistsError:
+                # A new name is needed if the file exists
+                name = self.get_available_name(name)
+                full_path = self.path(name)
+            else:
+                # Set file permissions if specified
+                if self.file_permissions_mode is not None:
+                    os.chmod(full_path, self.file_permissions_mode)
+                # Store filenames with forward slashes, even on Windows
+                return name.replace("\\", "/")
 
 
 class DebugValidationMixin:
@@ -680,34 +773,14 @@ class EnhancedManifestFilesMixin(EnhancedHashedFilesMixin, ManifestFilesMixin):
     keep_original_files = True
 
     def post_process(self, *args, **kwargs):
-        """
-        Enhanced post_process with keep_original_files support (ticket_27929).
-        """
         self.hashed_files = {}
-        original_files_to_delete = []
-
-        for name, hashed_name, processed in super().post_process(*args, **kwargs):
-            yield name, hashed_name, processed
-            # Track original files to delete if keep_original_files is False
-            if (
-                not self.keep_original_files
-                and processed
-                and name != hashed_name
-                and self.exists(name)
-            ):
-                original_files_to_delete.append(name)
-
+        yield from super().post_process(*args, **kwargs)
         if not kwargs.get("dry_run"):
             self.save_manifest()
-            # Delete original files after processing is complete
-            if not self.keep_original_files:
-                for name in original_files_to_delete:
-                    if self.exists(name):
-                        self.delete(name)
 
 
 class EnhancedManifestStaticFilesStorage(
-    EnhancedManifestFilesMixin, StaticFilesStorage
+    ThreadSafeStorageMixin, EnhancedManifestFilesMixin, StaticFilesStorage
 ):
     """
     Enhanced ManifestStaticFilesStorage:
@@ -717,6 +790,7 @@ class EnhancedManifestStaticFilesStorage(
     - ticket_28200: Optimized storage to avoid unnecessary file operations
     - ticket_34322: JsLex for ES module support
     - ignore_errors: List of 'file:url' errors to ignore during post-processing
+    - Thread-safe storage for parallel collectstatic operations
     """
 
     def __init__(
@@ -749,6 +823,18 @@ class EnhancedManifestStaticFilesStorage(
         else:
             self.ignore_errors = []
         super().__init__(location, base_url, *args, **kwargs)
+
+
+class ThreadSafeStaticFilesStorage(ThreadSafeStorageMixin, StaticFilesStorage):
+    """
+    StaticFilesStorage with thread-safe directory creation for parallel collectstatic.
+
+    This is a simple wrapper around Django's StaticFilesStorage that adds thread-safe
+    directory creation. Use this when you need parallel collectstatic but don't need
+    manifest/hashed file features.
+    """
+
+    pass
 
 
 class TestingManifestStaticFilesStorage(DebugValidationMixin, StaticFilesStorage):

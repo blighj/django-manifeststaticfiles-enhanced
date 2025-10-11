@@ -15,6 +15,7 @@ This package includes several improvements to Django's `ManifestStaticFilesStora
 - **[ticket_34322](https://code.djangoproject.com/ticket/34322)**: JsLex for ES module support in JavaScript files
 - **[ticket_28200](https://code.djangoproject.com/ticket/28200)**: Optimized storage to avoid unnecessary file operations for unchanged files
 - **[ticket_26329](https://code.djangoproject.com/ticket/26329)**: Ensure production errors are rasied in development too
+- **[ticket_23517](https://code.djangoproject.com/ticket/23517)**: Collect static files in parallel
 
 ## Compatibility
 
@@ -41,12 +42,23 @@ STORAGES = {
     },
 }
 ```
+Add `django_manifeststaticfiles_enhanced` to your `INSTALLED_APPS` before `contrib.staticfiles`
+
+```python
+# settings.py
+INSTALLED_APPS = [
+    ...
+    "django_manifeststaticfiles_enhanced",
+    "contrib.staticfiles",
+    ...
+]
+```
 
 ### Configuration Options
 
 #### keep_original_files ([ticket_27929](https://code.djangoproject.com/ticket/27929))
 
-Control whether original files are kept after hashing:
+Control whether original files are kept with the hashed file:
 
 ```python
 # settings.py - Keep original files (default)
@@ -59,7 +71,7 @@ STORAGES = {
     },
 }
 
-# Or delete original files to save space
+# Or discard original files to save space
 STORAGES = {
     "staticfiles": {
         "BACKEND": "django_manifeststaticfiles_enhanced.storage.EnhancedManifestStaticFilesStorage",
@@ -102,6 +114,10 @@ STORAGES = {
 
 Also available:
  - manifest_name: change the name of the staticfiles.json file
+
+
+### --parallel command line option
+By default the copying of files to the static folder uses 10 threads, this should be optimal for most projects but you can supply the --parallel option to add more workers if you have lots of files and fast io, or less workers if you have few files and slow io (NAS). Set --parallel to 1 to disable parallel collection.
 
 ## Feature Details
 
@@ -198,6 +214,9 @@ The `TestingManifestStaticFilesStorage` includes the `DebugValidationMixin` whic
 3. Checks if the file actually exists in your static files
 4. Detects case sensitivity issues that might work in development but fail in production
 
+### Collect static files in parallel
+ - Uses threadpool workers to speed up copying files from finders
+
 ## Running Tests
 
 ```bash
@@ -217,7 +236,8 @@ This package is designed as a drop-in replacement:
 
 1. Install the package
 2. Update your `STORAGES` setting
-3. Run `python manage.py collectstatic` as usual
+3. Add `django_manifeststaticfiles_enhanced` to `INSTALLED_APPS` above `contrib.staticfiles`
+4. Run `python manage.py collectstatic` as usual
 
 All existing functionality remains the same, with additional features available through configuration options.
 
@@ -230,6 +250,9 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the BSD 3-Clause License - the same license as Django.
 
 ## Changelog
+
+### 0.7.0
+ - Add collectstatic command with parallelization, which can be customized with  --parallel option
 
 ### 0.6.0
 

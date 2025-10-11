@@ -58,6 +58,7 @@ TEST_SETTINGS = {
         "django.contrib.staticfiles.finders.DefaultStorageFinder",
     ],
     "INSTALLED_APPS": [
+        "django_manifeststaticfiles_enhanced",
         "django.contrib.staticfiles",
         "staticfiles_tests.apps.test",
         "staticfiles_tests.apps.no_label",
