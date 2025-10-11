@@ -20,6 +20,7 @@ from django.test import SimpleTestCase, override_settings
 
 from django_manifeststaticfiles_enhanced.storage import (
     EnhancedManifestStaticFilesStorage,
+    ThreadSafeStaticFilesStorage,
 )
 
 from .cases import CollectionTestCase
@@ -577,13 +578,14 @@ class TestCollectionManifestStorage(TestHashedFiles, CollectionTestCase):
         self.assertEqual(manifest_content, {"dummy.txt": "dummy.txt"})
 
     def test_keep_original_files_false(self):
-        # Test that original files are deleted when keep_original_files is False
+        # Test that original files are not copied when keep_original_files is False
         original_keep_original_files = storage.staticfiles_storage.keep_original_files
         try:
             storage.staticfiles_storage.keep_original_files = False
-            self.run_collectstatic()
+            # Clear and re-run collectstatic with the new setting
+            self.run_collectstatic(clear=True)
 
-            # Check that hashed CSS files exist but original files are deleted
+            # Check that hashed CSS files exist but original files are not copied
             cached_files = os.listdir(os.path.join(settings.STATIC_ROOT, "cached"))
             hashed_css_files = [
                 f
@@ -592,10 +594,12 @@ class TestCollectionManifestStorage(TestHashedFiles, CollectionTestCase):
             ]
             self.assertTrue(len(hashed_css_files) > 0, "No hashed CSS files found")
 
-            # Check that original CSS file was deleted
+            # Check that original CSS file was not copied
             original_css_files = [f for f in cached_files if f == "styles.css"]
             self.assertEqual(
-                len(original_css_files), 0, "Original CSS file should have been deleted"
+                len(original_css_files),
+                0,
+                "Original CSS file should not have been copied",
             )
 
         finally:
@@ -990,7 +994,7 @@ class TestCustomManifestStorage(SimpleTestCase):
         self.assertNotEqual(new_manifest, self.manifest)
 
 
-class CustomStaticFilesStorage(storage.StaticFilesStorage):
+class CustomStaticFilesStorage(ThreadSafeStaticFilesStorage):
     """
     Used in TestStaticFilePermissions
     """
@@ -1002,6 +1006,17 @@ class CustomStaticFilesStorage(storage.StaticFilesStorage):
 
 
 @unittest.skipIf(sys.platform == "win32", "Windows only partially supports chmod.")
+@override_settings(
+    STORAGES={
+        **settings.STORAGES,
+        STATICFILES_STORAGE_ALIAS: {
+            "BACKEND": (
+                "django_manifeststaticfiles_enhanced.storage."
+                "ThreadSafeStaticFilesStorage"
+            ),
+        },
+    }
+)
 class TestStaticFilePermissions(CollectionTestCase):
     command_params = {
         "interactive": False,
@@ -1515,7 +1530,7 @@ class TestEnhancedManifestStorageOptions(CollectionTestCase):
         }
     )
     def test_keep_original_files_false(self):
-        self.run_collectstatic()
+        self.run_collectstatic(clear=True)
 
         # Check that hashed CSS files exist but original files are deleted
         cached_files = os.listdir(os.path.join(settings.STATIC_ROOT, "cached"))
