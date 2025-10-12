@@ -5,7 +5,7 @@ import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from graphlib import CycleError, TopologicalSorter
-from urllib.parse import unquote, urldefrag
+from urllib.parse import unquote, urldefrag, urlsplit, urlunsplit
 
 import django
 from django.conf import settings
@@ -478,8 +478,13 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         # Strip off the fragment so a path-like fragment won't interfere.
         url_path, fragment = urldefrag(url)
 
+        # Strip off query string as well - it shouldn't affect file hash lookup
+        parsed = urlsplit(url_path)
+        clean_path = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+        query_string = parsed.query
+
         # determine the target file name (remove /static if needed)
-        target_name = self._get_base_target_name(url_path, name)
+        target_name = self._get_base_target_name(clean_path, name)
 
         # Determine the hashed name of the target file with the storage backend.
         hashed_url = self._url(
@@ -498,8 +503,12 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         )
 
         # Restore the fragment that was stripped off earlier.
+        if query_string:
+            transformed_url += "?" + query_string
         if fragment:
-            transformed_url += ("?#" if "?#" in url else "#") + fragment
+            transformed_url += (
+                "?#" if "?#" in url and "?" not in transformed_url else "#"
+            ) + fragment
 
         # Ensure we return a string (handle mock objects in tests)
         return str(transformed_url)
