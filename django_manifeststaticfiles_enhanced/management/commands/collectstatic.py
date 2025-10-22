@@ -46,19 +46,19 @@ class Command(DjangoCollectstaticCommand):
         parser.add_argument(
             "--parallel",
             type=int,
-            default=10,
+            default=None,
             dest="parallel_workers",
-            help="Number of parallel workers for file processing (default: 10).",
+            help="Number of parallel workers for file processing.",
         )
 
     def set_options(self, **options):
         """Set instance variables based on an options dict."""
         super().set_options(**options)
-        self.parallel_workers = options.get("parallel_workers", 10)
+        self.parallel_workers = options.get("parallel_workers", None)
 
         # Use sets for O(1) lookups during parallel processing
         # These will be converted back to lists in collect() for Django compatibility
-        if self.parallel_workers > 1:
+        if self.parallel_workers is None or self.parallel_workers > 1:
             self._copied_set = set()
             self._symlinked_set = set()
             self._unmodified_set = set()
@@ -122,7 +122,7 @@ class Command(DjangoCollectstaticCommand):
                     self.skipped_files.append(prefixed_path)
 
         # Phase 2: Parallel file processing
-        if self.parallel_workers > 1 and work_queue:
+        if self.parallel_workers is None or self.parallel_workers > 1 and work_queue:
             self._process_files_parallel(work_queue, handler)
         else:
             # Fall back to sequential processing if parallel_workers=1
@@ -130,7 +130,7 @@ class Command(DjangoCollectstaticCommand):
                 handler(path, prefixed_path, storage)
 
         # Convert sets back to lists for Django compatibility
-        if self.parallel_workers > 1:
+        if self.parallel_workers is None or self.parallel_workers > 1:
             self.copied_files = list(self._copied_set)
             self.symlinked_files = list(self._symlinked_set)
             self.unmodified_files = list(self._unmodified_set)
@@ -209,7 +209,7 @@ class Command(DjangoCollectstaticCommand):
         This is a reimplementation of the parent's copy_file method with proper locking.
         """
         # Skip this file if it was already copied earlier
-        if self.parallel_workers > 1:
+        if self.parallel_workers is None or self.parallel_workers > 1:
             with self._copied_lock:
                 if prefixed_path in self._copied_set:
                     self.log("Skipping '%s' (already copied earlier)" % path, level=2)
@@ -242,7 +242,7 @@ class Command(DjangoCollectstaticCommand):
             with source_storage.open(path) as source_file:
                 self.storage.save(prefixed_path, source_file)
 
-        if self.parallel_workers > 1:
+        if self.parallel_workers is None or self.parallel_workers > 1:
             with self._copied_lock:
                 self._copied_set.add(prefixed_path)
         else:
@@ -255,7 +255,7 @@ class Command(DjangoCollectstaticCommand):
         This is a reimplementation of the parent's link_file method with proper locking.
         """
         # Skip this file if it was already linked earlier
-        if self.parallel_workers > 1:
+        if self.parallel_workers is None or self.parallel_workers > 1:
             with self._symlinked_lock:
                 if prefixed_path in self._symlinked_set:
                     self.log("Skipping '%s' (already linked earlier)" % path, level=2)
@@ -290,7 +290,7 @@ class Command(DjangoCollectstaticCommand):
 
             # Thread-safe directory creation for symlinks
             # Always lock in parallel mode to serialize umask manipulation
-            if self.parallel_workers > 1:
+            if self.parallel_workers is None or self.parallel_workers > 1:
                 with _link_makedirs_lock:
                     dir_perms = getattr(
                         self.storage, "directory_permissions_mode", None
@@ -326,7 +326,7 @@ class Command(DjangoCollectstaticCommand):
             except OSError as e:
                 raise CommandError(e)
 
-        if self.parallel_workers > 1:
+        if self.parallel_workers is None or self.parallel_workers > 1:
             with self._symlinked_lock:
                 self._symlinked_set.add(prefixed_path)
         else:
@@ -377,7 +377,7 @@ class Command(DjangoCollectstaticCommand):
                     ) >= source_last_modified.replace(microsecond=0)
 
                     if file_is_unmodified and can_skip_unmodified_files:
-                        if self.parallel_workers > 1:
+                        if self.parallel_workers is None or self.parallel_workers > 1:
                             with self._unmodified_lock:
                                 self._unmodified_set.add(prefixed_path)
                         else:
