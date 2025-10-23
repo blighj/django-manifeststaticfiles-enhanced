@@ -234,10 +234,10 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
         # Phase 1: Process non-adjustable files in parallel
         # These are files with no URL substitutions (images, fonts, etc.)
-        # Use a default of 10 workers for post-processing
-        max_workers = getattr(self, "post_process_workers", 10)
 
-        if non_adjustable and max_workers > 1:
+        max_workers = getattr(self, "post_process_workers", None)
+
+        if non_adjustable and (max_workers is None or max_workers > 1):
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # Submit all non-adjustable files for parallel processing
                 futures = [
