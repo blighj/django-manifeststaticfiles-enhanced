@@ -287,17 +287,38 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         # Store the processed paths
         self.hashed_files.update(hashed_files)
 
+    @property
+    def url_finders(self):
+        """
+        Mapping of glob patterns to URL extraction functions.
+
+        Each function receives (name, content) and returns a list of
+        (url, position) tuples.
+        """
+        return {
+            "*.css": [self._process_css_urls, self._process_sourcemap],
+            "*.js": [self._process_js_modules, self._process_sourcemap],
+        }
+
+    def _get_url_finders(self, name):
+        """Return list of URL finder functions for the given file name."""
+        finders = []
+        for pattern, pattern_finders in self.url_finders.items():
+            if matches_patterns(name, [pattern]):
+                finders.extend(pattern_finders)
+        return finders
+
     def _find_substitutions(self, paths):
         """
-        Returns a dictionary mapping file names that need substitutions to a
+        Return a dictionary mapping file names that need substitutions to a
         list of file names that need substituting along with the position in
-        the file
+        the file.
         """
         substitutions_dict = {}
-        adjustable_paths = [
-            path for path in paths if matches_patterns(path, ["*.css", "*.js"])
-        ]
-        for name in adjustable_paths:
+        for name in paths:
+            finders = self._get_url_finders(name)
+            if not finders:
+                continue
             storage, path = paths[name]
             with storage.open(path) as original_file:
                 try:
@@ -305,11 +326,10 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 except UnicodeDecodeError as exc:
                     raise ProcessingException(exc, path)
 
-                substitutions_dict[name] = (
-                    self._process_css_urls(name, content)
-                    + self._process_js_modules(name, content)
-                    + self._process_sourcemap(name, content)
-                )
+                url_positions = []
+                for finder in finders:
+                    url_positions.extend(finder(name, content))
+                substitutions_dict[name] = url_positions
         return substitutions_dict
 
     def _topological_sort(self, paths, substitutions_dict):
@@ -494,10 +514,6 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             hashed_files=hashed_files,
         )
 
-        # Ensure hashed_url is a string (handle mock objects in tests)
-        if hasattr(hashed_url, "__str__"):
-            hashed_url = str(hashed_url)
-
         transformed_url = "/".join(
             url_path.split("/")[:-1] + hashed_url.split("/")[-1:]
         )
@@ -510,8 +526,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 "?#" if "?#" in url and "?" not in transformed_url else "#"
             ) + fragment
 
-        # Ensure we return a string (handle mock objects in tests)
-        return str(transformed_url)
+        return transformed_url
 
     def _get_target_name(self, url, source_name):
         """
