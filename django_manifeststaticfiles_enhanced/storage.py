@@ -202,7 +202,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
     def _test_url_substitutions(self, paths):
         """
-        Process the paths for url suvstitutions and find exceptions
+        Process the paths for url substitutions and find exceptions
         """
         substitutions_dict = self._find_substitutions(paths)
         for name, url_positions in substitutions_dict.items():
@@ -335,10 +335,10 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
     def _topological_sort(self, paths, substitutions_dict):
         """
         Examines all the files that need substitutions and returns the list of
-        files sorted in an order that is safe to process lineraly, e.g
+        files sorted in an order that is safe to process linearly, e.g
         image.png is hashed before styles.css needs to replace it with
         image.hash.png in a url().
-        Any circular dependencies found will be returned as a seperate list.
+        Any circular dependencies found will be returned as a separate list.
 
         Returns a tuple of (non_adjustable, linear_deps, circular_deps) where:
         - non_adjustable: Files that can be processed in parallel (no dependencies)
@@ -782,7 +782,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
         Please check the URL references in this {ext} file, particularly any
         relative paths which might be pointing to the wrong location.
-        It is possible to ignore this error by pasing the OPTIONS:
+        It is possible to ignore this error by passing the OPTIONS:
         {{
             "ignore_errors": ["{filename}:{url}"]
         }}

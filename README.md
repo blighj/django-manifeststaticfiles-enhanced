@@ -14,13 +14,13 @@ This package includes several improvements to Django's `ManifestStaticFilesStora
 - **[ticket_21080](https://code.djangoproject.com/ticket/21080)**: CSS lexer for better URL parsing in CSS files
 - **[ticket_34322](https://code.djangoproject.com/ticket/34322)**: JsLex for ES module support in JavaScript files
 - **[ticket_28200](https://code.djangoproject.com/ticket/28200)**: Optimized storage to avoid unnecessary file operations for unchanged files
-- **[ticket_26329](https://code.djangoproject.com/ticket/26329)**: Ensure production errors are rasied in development too
+- **[ticket_26329](https://code.djangoproject.com/ticket/26329)**: Ensure production errors are raised in development too
 - **[ticket_23517](https://code.djangoproject.com/ticket/23517)**: Collect static files in parallel
 
 ## Compatibility
 
-- **Django**: 4.2, 5.0, 5.1, 5.2
-- **Python**: 3.9, 3.10, 3.11, 3.12, 3.13
+- **Django**: 4.2, 5.0, 5.1, 5.2, 6.0
+- **Python**: 3.9, 3.10, 3.11, 3.12, 3.13, 3.14
 
 ## Installation
 
@@ -156,7 +156,7 @@ import { Component } from './component.abc123.js';
 export { utils } from './utils.def456.js';
 ```
 
-### Option to not move the origianl asset to your static folder ([ticket_27929](https://code.djangoproject.com/ticket/27929))
+### Option to not move the original asset to your static folder ([ticket_27929](https://code.djangoproject.com/ticket/27929))
 
 Control file cleanup behavior:
 
@@ -274,7 +274,7 @@ This project is licensed under the BSD 3-Clause License - the same license as Dj
 
 ### 0.2.0
 
-- Performence improvements
+- Performance improvements
 - Improved exception messages
 - Fixed issue with js dynamic imports that include template literals
 - Improved handling of soucerMapURLs
