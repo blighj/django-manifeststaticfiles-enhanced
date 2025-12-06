@@ -1257,7 +1257,7 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
 
                 Please check the URL references in this {ext} file, particularly any
                 relative paths which might be pointing to the wrong location.
-                It is possible to ignore this error by pasing the OPTIONS:
+                It is possible to ignore this error by passing the OPTIONS:
                 {{
                     "ignore_errors": ["{filename}:{url}"]
                 }}
