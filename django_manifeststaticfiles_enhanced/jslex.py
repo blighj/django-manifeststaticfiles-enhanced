@@ -124,7 +124,7 @@ class JsLexer(Lexer):
         Tok(
             "id",
             r"""
-                  ([a-zA-Z_$   ]|\\u[0-9a-fA-Z]{4})   # first char
+                  ([a-zA-Z_$   ]|\\u[0-9a-fA-F]{4})   # first char
                   ([a-zA-Z_$0-9]|\\u[0-9a-fA-F]{4})*  # rest chars
                   """,
             next="div",
@@ -351,6 +351,7 @@ class CssLexer(Lexer):
         + CATCHALL,
         "function-args": COMMON_TOKENS
         + [
+            URL_TOKEN,
             Tok("percentage", r"-?(\d+\.?\d*|\.\d+)%"),
             DIMENSION_TOKEN,
             Tok("number", r"-?(\d+\.?\d*|\.\d+)"),
