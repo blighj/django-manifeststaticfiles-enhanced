@@ -457,6 +457,39 @@ class ExtractCssUrlsTest(SimpleTestCase):
         urls = extract_css_urls(css)
         self.assertEqual(len(urls), 0)
 
+    def test_url_in_image_set(self):
+        """Test URLs from image-set()"""
+        css = (
+            ".hero { "
+            "background-image: image-set(url(hero.webp) 1x, url(hero@2x.webp) 2x); }"
+        )
+        urls = extract_css_urls(css)
+        url_values = [url[0] for url in urls]
+        self.assertIn("hero.webp", url_values)
+        self.assertIn("hero@2x.webp", url_values)
+        self.assertEqual(len(urls), 2)
+
+    def test_url_in_webkit_image_set(self):
+        """Test URLs from -webkit-image-set()"""
+        css = (
+            ".hero { "
+            "background: -webkit-image-set(url(img.png) 1x, url(img@2x.png) 2x); }"
+        )
+        urls = extract_css_urls(css)
+        url_values = [url[0] for url in urls]
+        self.assertIn("img.png", url_values)
+        self.assertIn("img@2x.png", url_values)
+        self.assertEqual(len(urls), 2)
+
+    def test_url_in_cross_fade(self):
+        """Test URLs from cross-fade()."""
+        css = ".fade { background-image: cross-fade(url(a.png), url(b.png), 50%); }"
+        urls = extract_css_urls(css)
+        url_values = [url[0] for url in urls]
+        self.assertIn("a.png", url_values)
+        self.assertIn("b.png", url_values)
+        self.assertEqual(len(urls), 2)
+
 
 class FindImportExportStringsTest(SimpleTestCase):
     """Test the find_import_export_strings function."""

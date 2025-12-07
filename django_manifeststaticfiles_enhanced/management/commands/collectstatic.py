@@ -122,7 +122,7 @@ class Command(DjangoCollectstaticCommand):
                     self.skipped_files.append(prefixed_path)
 
         # Phase 2: Parallel file processing
-        if self.parallel_workers is None or self.parallel_workers > 1 and work_queue:
+        if (self.parallel_workers is None or self.parallel_workers > 1) and work_queue:
             self._process_files_parallel(work_queue, handler)
         else:
             # Fall back to sequential processing if parallel_workers=1
@@ -176,12 +176,19 @@ class Command(DjangoCollectstaticCommand):
             ]
 
             # Wait for all tasks to complete and handle any exceptions
+            first_exception = None
             for future in futures:
                 try:
                     future.result()
                 except Exception as exc:
-                    # Let exceptions propagate (Django will handle them)
-                    raise exc
+                    if first_exception is None:
+                        first_exception = exc
+                        # Cancel remaining futures that haven't started yet
+                        for f in futures:
+                            f.cancel()
+
+            if first_exception is not None:
+                raise first_exception
 
     def _thread_safe_copy_file(self, path, prefixed_path, source_storage):
         """
