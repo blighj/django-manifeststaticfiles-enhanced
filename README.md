@@ -18,6 +18,8 @@ This package includes several improvements to Django's `ManifestStaticFilesStora
 - **[ticket_23517](https://code.djangoproject.com/ticket/23517)**: Collect static files in parallel
 - **[ticket_36968](https://code.djangoproject.com/ticket/36968)**: Provide better error messages when collectstatic fails
 - **[new_feature 127](https://github.com/django/new-features/issues/127)**: Configurable using the OPTIONS dict of STORAGES setting
+- **staticjs**: JavaScript utility to access hashed static file paths in JavaScript
+
 ## Compatibility
 
 - **Django**: 4.2, 5.0, 5.1, 5.2, 6.0
@@ -189,6 +191,32 @@ keep_original_files = False
 # Results in: style.abc123.css only
 ```
 
+### JavaScript Static File Access (staticjs)
+
+Access hashed static file paths in JavaScript using the `django.static()` function:
+Add django-manifeststaticfiles-enhanced to your INSTALLED_APPS
+
+```html
+<!-- Include the django.js file in your template -->
+{% load staticjs $}
+
+{% include_staticjs %}
+
+<!-- Now you can use django.static() in your JavaScript -->
+<script src="dom_change.js"></script>
+```
+
+```js
+  // In development mode: returns "images/logo.png"
+  // In production mode: returns "images/logo.123abc.png"
+  const logoPath = django.static("images/logo.png");
+
+  // Use this path in your DOM manipulations
+  document.getElementById("logo").src = logoPath;
+```
+
+This feature is automatically added during collectstatic. The hashed version will be created and referenced correctly, similar to how Django's static template tag works.
+
 ### Ignoring specific errors
 
 Ignore specific errors during post-processing with the `ignore_errors` option. This is useful when you have third-party libraries that reference non-existent files or use dynamic path construction that can't be properly parsed.
@@ -272,6 +300,7 @@ This project is licensed under the BSD 3-Clause License - the same license as Dj
 
 ### 0.8.0
  - Added improved regex approach and made the lexer opt-in via use_lexer param
+ - Added JavaScript static file access utility (`staticjs/django.js`)
 
 ### 0.7.0
  - Add collectstatic command with parallelization, which can be customized with  --parallel option
