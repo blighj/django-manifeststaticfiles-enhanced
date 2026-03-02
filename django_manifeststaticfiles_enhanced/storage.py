@@ -167,11 +167,9 @@ class DebugValidationMixin:
         return super().url(name, force)
 
 
-class ProcessingException(Exception):
-    def __init__(self, e, file_name):
+class StaticFileProcessingError(ValueError):
+    def __init__(self, file_name):
         self.file_name = file_name
-        self.original_exception = e
-        super().__init__(e.args[0] if len(e.args) else "")
 
 
 class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
@@ -185,7 +183,15 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         """
         Post process the given dictionary of files (called from collectstatic).
 
-        Uses a dependency graph approach to minimize the number of passes required.
+        Processing is actually two separate operations:
+
+        1. renaming files to include a hash of their content for cache-busting,
+           and copying those files to the target storage.
+        2. adjusting files which contain references to other files so they
+           refer to the cache-busting filenames.
+
+        If either of these are performed on a file, then that file is
+        considered post-processed.
         """
         try:
             # if we're in dry run, still find urls and raise any exceptions
@@ -195,10 +201,10 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
             # Process files using the dependency graph
             yield from self._post_process(paths)
-        except ProcessingException as exc:
+        except StaticFileProcessingError as exc:
             # django's collectstatic management command is written to expect
             # the exception to be returned in this format
-            yield exc.file_name, None, exc.original_exception
+            yield exc.file_name, None, exc.__cause__
 
     def _test_url_substitutions(self, paths):
         """
@@ -214,7 +220,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                         message = exc.args[0] if len(exc.args) else ""
                         message = f"Error processing the url {url}\n{message}"
                         exc = self._make_helpful_exception(ValueError(message), name)
-                        raise ProcessingException(exc, name)
+                        raise StaticFileProcessingError(name) from exc
 
     def _post_process(self, paths):
         """
@@ -324,7 +330,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 try:
                     content = original_file.read().decode("utf-8")
                 except UnicodeDecodeError as exc:
-                    raise ProcessingException(exc, path)
+                    raise StaticFileProcessingError(path) from exc
 
                 url_positions = []
                 for finder in finders:
@@ -412,7 +418,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         except ValueError as e:
             message = e.args[0] if len(e.args) else ""
             message = f"The js file '{name}' could not be processed.\n{message}"
-            raise ProcessingException(ValueError(message), name)
+            raise StaticFileProcessingError(name) from ValueError(message)
         for url_name, position in urls:
             if self._should_adjust_url(url_name):
                 url_positions.append((url_name, position))
@@ -432,7 +438,6 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
     )
 
     def _process_css_urls(self, name, content):
-        """Process CSS url & import statements."""
         url_positions = []
         if not matches_patterns(name, ("*.css",)):
             return url_positions
@@ -471,9 +476,6 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
     }
 
     def _should_adjust_url(self, url):
-        """
-        Return whether this is a url that should be adjusted
-        """
         # Ignore absolute/protocol-relative and data-uri URLs.
         if re.match(r"^[a-z]+:", url) or url.startswith("//"):
             return False
@@ -557,7 +559,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
     def _process_file(self, name, storage_and_path, hashed_files, url_positions):
         """
-        Process a single file using the unified graph structure.
+        Adjust contents of fils and save hashed file copy
         """
         storage, path = storage_and_path
 
@@ -635,7 +637,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                     message = exc.args[0] if len(exc.args) else ""
                     message = f"Error processing the url {url}\n{message}"
                     exc = self._make_helpful_exception(ValueError(message), name)
-                    raise ProcessingException(exc, name)
+                    raise StaticFileProcessingError(name) from exc
 
             result_parts.append(transformed_url)
             last_position = position + len(url)
@@ -663,7 +665,6 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             hashed_files: Dict of already processed files
         """
         circular_hashes = {}
-        processed_files = set()
 
         # First pass: Replace all non-circular dependency URLs in each file
         # and generate group hash
@@ -673,9 +674,6 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
         # Second pass: Create hashed filenames using the group hash
         for name in circular_deps:
-            if name in processed_files:
-                continue
-
             # Generate a hashed filename based on the group hash
             filename, ext = os.path.splitext(name)
             hashed_name = f"{filename}.{group_hash}{ext}"
@@ -683,13 +681,12 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             # Store the hash for this file
             hash_key = self.hash_key(self.clean_name(name))
             circular_hashes[hash_key] = hashed_name
-            processed_files.add(name)
 
+        combined_hashes = {**hashed_files, **circular_hashes}
         # Third pass: Process all URLs (including circular ones) and save files
         for name in circular_deps:
             content = original_contents[name]
 
-            combined_hashes = {**hashed_files, **circular_hashes}
             content = self._process_file_content(
                 name, content, substitutions_dict.get(name, []), combined_hashes
             )
@@ -773,8 +770,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         r"^Error processing the url (.+)\nThe file '(.+)' could not be found"
     )
 
-    _error_msg = textwrap.dedent(
-        """\
+    _error_msg = textwrap.dedent("""\
         {orig_message}
 
         The {ext} file '{filename}' references a file which could not be found:
@@ -786,8 +782,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         {{
             "ignore_errors": ["{filename}:{url}"]
         }}
-        """
-    )
+        """)
 
     def _should_ignore_url(self, filename, url):
         """

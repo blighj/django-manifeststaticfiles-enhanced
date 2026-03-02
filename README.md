@@ -142,7 +142,7 @@ JS import/export processing uses a proper lexer instead of regex, providing:
 
 - Covers ES6 import/export statements and dynamic imports
 - Ignores statements in comments and strings
-- Supports assert statements in imports, `import sheet from './styles.css' assert { type: 'css' };`
+- Supports with attribute in imports, `import sheet from './styles.css' with { type: 'css' };`
 
 Example JavaScript that gets processed:
 

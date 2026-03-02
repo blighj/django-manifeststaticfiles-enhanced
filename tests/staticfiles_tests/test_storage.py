@@ -824,7 +824,7 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
 
     def test_module_import(self):
         relpath = self.hashed_file_path("cached/module.js")
-        self.assertEqual(relpath, "cached/module.5960f712d6bb.js")
+        self.assertEqual(relpath, "cached/module.7a0f6282224e.js")
         tests = [
             # Relative imports.
             b'import testConst from "./module_test.477bbebe77f0.js";',
@@ -849,8 +849,8 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
             b"    firstVar1 as firstVarAlias,\n"
             b"    $second_var_2 as secondVarAlias\n"
             b'} from "./module_test.477bbebe77f0.js";',
-            # With Assert
-            b'import k from"./other.d41d8cd98f00.css"assert{type:"css"};',
+            # With attribute
+            b'import k from"./other.d41d8cd98f00.css"with{type:"css"};',
             # Unprocessed
             b'// @returns {import("./non-existent-1").something}',
             b'/* @returns {import("./non-existent-2").something} */',
@@ -871,7 +871,7 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
 
     def test_aggregating_modules(self):
         relpath = self.hashed_file_path("cached/module.js")
-        self.assertEqual(relpath, "cached/module.5960f712d6bb.js")
+        self.assertEqual(relpath, "cached/module.7a0f6282224e.js")
         tests = [
             b'export * from "./module_test.477bbebe77f0.js";',
             b'export { testConst } from "./module_test.477bbebe77f0.js";',
@@ -1248,8 +1248,7 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
             finders.get_finder.cache_clear()
             err = StringIO()
             configured_storage = storage.staticfiles_storage
-            _expected_error_msg = textwrap.dedent(
-                """\
+            _expected_error_msg = textwrap.dedent("""\
                 The file '{missing}' could not be found with {storage}.
 
                 The {ext} file '{filename}' references a file which could not be found:
@@ -1261,8 +1260,7 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                 {{
                     "ignore_errors": ["{filename}:{url}"]
                 }}
-                """
-            )
+                """)
             err_msg = _expected_error_msg.format(
                 missing="test/xyz.png",
                 storage=configured_storage._wrapped,
