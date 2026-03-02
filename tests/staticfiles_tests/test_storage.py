@@ -1248,8 +1248,7 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
             finders.get_finder.cache_clear()
             err = StringIO()
             configured_storage = storage.staticfiles_storage
-            _expected_error_msg = textwrap.dedent(
-                """\
+            _expected_error_msg = textwrap.dedent("""\
                 The file '{missing}' could not be found with {storage}.
 
                 The {ext} file '{filename}' references a file which could not be found:
@@ -1261,8 +1260,7 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                 {{
                     "ignore_errors": ["{filename}:{url}"]
                 }}
-                """
-            )
+                """)
             err_msg = _expected_error_msg.format(
                 missing="test/xyz.png",
                 storage=configured_storage._wrapped,

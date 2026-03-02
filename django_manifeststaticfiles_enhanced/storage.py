@@ -770,8 +770,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         r"^Error processing the url (.+)\nThe file '(.+)' could not be found"
     )
 
-    _error_msg = textwrap.dedent(
-        """\
+    _error_msg = textwrap.dedent("""\
         {orig_message}
 
         The {ext} file '{filename}' references a file which could not be found:
@@ -783,8 +782,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         {{
             "ignore_errors": ["{filename}:{url}"]
         }}
-        """
-    )
+        """)
 
     def _should_ignore_url(self, filename, url):
         """
