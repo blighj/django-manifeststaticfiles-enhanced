@@ -1,7 +1,6 @@
 import os
 import posixpath
 import re
-import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from graphlib import CycleError, TopologicalSorter
@@ -23,6 +22,18 @@ from django_manifeststaticfiles_enhanced.jslex import (
     extract_css_urls,
     find_import_export_strings,
 )
+
+
+def _line_at_position(content, position):
+    start = content.rfind("\n", 0, position) + 1
+    end = content.find("\n", position)
+    end = end if end != -1 else len(content)
+    line_num = content.count("\n", 0, start) + 1
+    msg = f"\n{line_num}: {content[start:end]}"
+    if len(msg) > 79:
+        return f"\n{line_num}"
+    return msg
+
 
 # Global lock for directory creation to ensure thread-safety across all instances
 _makedirs_lock = threading.Lock()
@@ -217,9 +228,6 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                     self._adjust_url(url, name, paths)
                 except ValueError as exc:
                     if not self._should_ignore_url(name, url):
-                        message = exc.args[0] if len(exc.args) else ""
-                        message = f"Error processing the url {url}\n{message}"
-                        exc = self._make_helpful_exception(ValueError(message), name)
                         raise StaticFileProcessingError(name) from exc
 
     def _post_process(self, paths):
@@ -634,9 +642,12 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 if self._should_ignore_url(name, url):
                     transformed_url = url
                 else:
-                    message = exc.args[0] if len(exc.args) else ""
-                    message = f"Error processing the url {url}\n{message}"
-                    exc = self._make_helpful_exception(ValueError(message), name)
+                    line = _line_at_position(content, position)
+                    note = f"{name!r} contains this reference {url!r} on line {line}"
+                    if hasattr(exc, "add_note"):
+                        exc.add_note(note)
+                    else:
+                        exc.args = (f"{exc.args[0]}\n{note}" if exc.args else note,)
                     raise StaticFileProcessingError(name) from exc
 
             result_parts.append(transformed_url)
@@ -745,44 +756,6 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         combined_file = ContentFile(combined_content.encode())
         group_hash = self.file_hash("_combined", combined_file)
         return group_hash, original_contents
-
-    def _make_helpful_exception(self, exception, name):
-        """
-        The ValueError for missing files, such as images/fonts in css, sourcemaps,
-        or js files in imports, lack context of the filebeing processed.
-        Reformat them to be more helpful in revealing the source of the problem.
-        """
-        message = exception.args[0] if len(exception.args) else ""
-        match = self._error_msg_re.search(message)
-        if match:
-            extension = os.path.splitext(name)[1].lstrip(".").upper()
-            message = self._error_msg.format(
-                orig_message=message,
-                filename=name,
-                missing=match.group(2),
-                ext=extension,
-                url=match.group(1),
-            )
-            exception = ValueError(message)
-        return exception
-
-    _error_msg_re = re.compile(
-        r"^Error processing the url (.+)\nThe file '(.+)' could not be found"
-    )
-
-    _error_msg = textwrap.dedent("""\
-        {orig_message}
-
-        The {ext} file '{filename}' references a file which could not be found:
-          {missing}
-
-        Please check the URL references in this {ext} file, particularly any
-        relative paths which might be pointing to the wrong location.
-        It is possible to ignore this error by passing the OPTIONS:
-        {{
-            "ignore_errors": ["{filename}:{url}"]
-        }}
-        """)
 
     def _should_ignore_url(self, filename, url):
         """

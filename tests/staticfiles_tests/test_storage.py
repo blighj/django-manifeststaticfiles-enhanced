@@ -4,7 +4,6 @@ import re
 import shutil
 import sys
 import tempfile
-import textwrap
 import unittest
 from io import StringIO
 from pathlib import Path
@@ -16,7 +15,7 @@ from django.contrib.staticfiles import finders, storage
 from django.contrib.staticfiles.management.commands.collectstatic import (
     Command as CollectstaticCommand,
 )
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import SimpleTestCase, override_settings
 
 from django_manifeststaticfiles_enhanced.storage import (
@@ -393,9 +392,14 @@ class TestHashedFiles:
         """
         finders.get_finder.cache_clear()
         err = StringIO()
-        with self.assertRaises(Exception):
+        with self.assertRaises(CommandError) as cm:
             call_command("collectstatic", interactive=False, verbosity=0, stderr=err)
         self.assertEqual("Post-processing 'faulty.css' failed!\n\n", err.getvalue())
+        self.assertIsInstance(cm.exception.__cause__, ValueError)
+        exc_message = str(cm.exception)
+        self.assertIn("faulty.css", exc_message)
+        self.assertIn("missing.css", exc_message)
+        self.assertIn("1:", exc_message)  # line 1 reported
         self.assertPostCondition()
 
     @override_settings(
@@ -405,8 +409,9 @@ class TestHashedFiles:
     def test_post_processing_nonutf8(self):
         finders.get_finder.cache_clear()
         err = StringIO()
-        with self.assertRaises(UnicodeDecodeError):
+        with self.assertRaises(CommandError) as cm:
             call_command("collectstatic", interactive=False, verbosity=0, stderr=err)
+        self.assertIsInstance(cm.exception.__cause__, UnicodeDecodeError)
         self.assertEqual("Post-processing 'nonutf8.css' failed!\n\n", err.getvalue())
         self.assertPostCondition()
 
@@ -903,7 +908,7 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
             # Expect ValueError with message about template literals
             error_message = "Found a template literal with a variable: ./${module_name}"
 
-            with self.assertRaisesMessage(ValueError, error_message):
+            with self.assertRaisesMessage(CommandError, error_message):
                 call_command(
                     "collectstatic", interactive=False, verbosity=0, stderr=err
                 )
@@ -1247,32 +1252,13 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
         with self.modify_settings(STATICFILES_DIRS={"append": self._temp_dir}):
             finders.get_finder.cache_clear()
             err = StringIO()
-            configured_storage = storage.staticfiles_storage
-            _expected_error_msg = textwrap.dedent("""\
-                The file '{missing}' could not be found with {storage}.
-
-                The {ext} file '{filename}' references a file which could not be found:
-                  {missing}
-
-                Please check the URL references in this {ext} file, particularly any
-                relative paths which might be pointing to the wrong location.
-                It is possible to ignore this error by passing the OPTIONS:
-                {{
-                    "ignore_errors": ["{filename}:{url}"]
-                }}
-                """)
-            err_msg = _expected_error_msg.format(
-                missing="test/xyz.png",
-                storage=configured_storage._wrapped,
-                filename=os.path.join("test", "bar.css"),
-                ext="CSS",
-                url="xyz.png",
-            )
-            with self.assertRaisesMessage(ValueError, err_msg):
+            with self.assertRaises(CommandError) as cm:
                 call_command(
                     "collectstatic", interactive=False, verbosity=0, stderr=err
                 )
-            with self.assertRaisesMessage(ValueError, err_msg):
+            self.assertIsInstance(cm.exception.__cause__, ValueError)
+            self.assertIn("xyz.png", str(cm.exception))
+            with self.assertRaises(CommandError) as cm:
                 call_command(
                     "collectstatic",
                     dry_run=True,
@@ -1280,6 +1266,8 @@ class TestCollectionHashedFilesCache(CollectionTestCase):
                     verbosity=0,
                     stderr=err,
                 )
+            self.assertIsInstance(cm.exception.__cause__, ValueError)
+            self.assertIn("xyz.png", str(cm.exception))
 
             if django.VERSION[:2] in [(4, 2), (5, 0)]:
                 return
