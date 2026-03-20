@@ -11,12 +11,13 @@ Enhanced ManifestStaticFilesStorage for Django.
 This package includes several improvements to Django's `ManifestStaticFilesStorage`:
 
 - **[ticket_27929](https://code.djangoproject.com/ticket/27929)**: `keep_original_files` option to control whether original files are deleted after hashing
-- **[ticket_21080](https://code.djangoproject.com/ticket/21080)**: CSS lexer for better URL parsing in CSS files
-- **[ticket_34322](https://code.djangoproject.com/ticket/34322)**: JsLex for ES module support in JavaScript files
+- **[ticket_21080](https://code.djangoproject.com/ticket/21080)**: Improved pattern matching, with optional CSS lexer for better URL parsing in CSS files
+- **[ticket_34322](https://code.djangoproject.com/ticket/34322)**: Improved pattern matching, with optional JS lexer for ES module support in JavaScript files
 - **[ticket_28200](https://code.djangoproject.com/ticket/28200)**: Optimized storage to avoid unnecessary file operations for unchanged files
 - **[ticket_26329](https://code.djangoproject.com/ticket/26329)**: Ensure production errors are raised in development too
 - **[ticket_23517](https://code.djangoproject.com/ticket/23517)**: Collect static files in parallel
-
+- **[ticket_36968](https://code.djangoproject.com/ticket/36968)**: Provide better error messages when collectstatic fails
+- **[new_feature 127](https://github.com/django/new-features/issues/127)**: Configurable using the OPTIONS dict of STORAGES setting
 ## Compatibility
 
 - **Django**: 4.2, 5.0, 5.1, 5.2, 6.0
@@ -98,6 +99,23 @@ STORAGES = {
 }
 ```
 
+#### Turn on lexer ([ticket_34322](https://code.djangoproject.com/ticket/34322))
+
+Use the lexer for slightly improved support but with a small performance cost.
+
+```python
+# settings.py
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "django_manifeststaticfiles_enhanced.storage.EnhancedManifestStaticFilesStorage",
+        "OPTIONS": {
+            "support_js_module_import_aggregation": True,
+            "use_lexer": True,
+        },
+    },
+}
+```
+
 #### Easy access to existing options
 Disable [manifest_strict](https://docs.djangoproject.com/en/5.2/ref/contrib/staticfiles/#django.contrib.staticfiles.storage.ManifestStaticFilesStorage.manifest_strict)
 ```python
@@ -123,11 +141,11 @@ By default the copying of files to the static folder uses 10 threads, this shoul
 
 ### CSS Processing Improvements ([ticket_21080](https://code.djangoproject.com/ticket/21080))
 
-CSS URL processing uses a proper lexer instead of regex, providing:
+Improved CSS URL processing, providing:
 
 - Ignores url's in comments
 - More reliable URL extraction
-- Wider @import support
+- Lexer option for slightly wider @import support ('@import /* comment */ "file.css"')
 
 ### File Operation Optimization ([ticket_28200](https://code.djangoproject.com/ticket/28200))
 
@@ -138,11 +156,12 @@ Reduces unnecessary file operations during `collectstatic`:
 
 ### JavaScript Module Support ([ticket_34322](https://code.djangoproject.com/ticket/34322))
 
-JS import/export processing uses a proper lexer instead of regex, providing:
+Improved JS import/export processing, providing:
 
 - Covers ES6 import/export statements and dynamic imports
 - Ignores statements in comments and strings
 - Supports with attribute in imports, `import sheet from './styles.css' with { type: 'css' };`
+- Lexer option for more complex cases (import(`module.js?t=${Date.now()}`))
 
 Example JavaScript that gets processed:
 
@@ -250,6 +269,9 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the BSD 3-Clause License - the same license as Django.
 
 ## Changelog
+
+### 0.8.0
+ - Added improved regex approach and made the lexer opt-in via use_lexer param
 
 ### 0.7.0
  - Add collectstatic command with parallelization, which can be customized with  --parallel option
