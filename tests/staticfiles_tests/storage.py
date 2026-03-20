@@ -105,3 +105,9 @@ class NoneHashStorage(EnhancedManifestStaticFilesStorage):
 
 class JSModuleImportAggregationManifestStorage(EnhancedManifestStaticFilesStorage):
     support_js_module_import_aggregation = True
+    use_lexer = False
+
+
+class JSModuleImportAggregationManifestStorageLexer(EnhancedManifestStaticFilesStorage):
+    support_js_module_import_aggregation = True
+    use_lexer = True

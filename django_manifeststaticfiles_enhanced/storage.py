@@ -17,10 +17,28 @@ from django.contrib.staticfiles.storage import (
 from django.contrib.staticfiles.utils import matches_patterns
 from django.core.exceptions import ImproperlyConfigured
 from django.core.files.base import ContentFile
+from django.utils.regex_helper import _lazy_re_compile
 
 from django_manifeststaticfiles_enhanced.jslex import (
     extract_css_urls,
     find_import_export_strings,
+)
+
+_css_ignored_re = _lazy_re_compile(
+    r"/\*.*?\*/"  # block comment
+    r"|\\."  # escape sequence
+    r"|'(?:[^'\\]|\\.)*'"  # single-quoted string
+    r'|"(?:[^"\\]|\\.)*"',  # double-quoted string
+    re.DOTALL,
+)
+_js_ignored_re = _lazy_re_compile(
+    r"/\*.*?\*/"  # block comment
+    r"|//[^\n]*"  # line comment
+    r"|\\."  # escape sequence
+    r"|'(?:[^'\\]|\\.)*'"  # single-quoted string
+    r'|"(?:[^"\\]|\\.)*"'  # double-quoted string
+    r"|`(?:[^`\\]|\\.)*`",  # template literal
+    re.DOTALL,
 )
 
 
@@ -185,6 +203,110 @@ class StaticFileProcessingError(ValueError):
 
 class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
+    use_lexer = False
+
+    # Override Django's base patterns to fix greedy .* in source map patterns.
+    # The greedy .* captures trailing whitespace (tabs, spaces) into the url
+    # group, which our positional substitution then removes. Using lazy .*? for
+    # CSS (where [ \t]*\*/ follows) and .*?)\s* for JS (where $ is the boundary)
+    # ensures only the URL itself is captured.
+    patterns = (
+        (
+            "*.css",
+            (
+                r"""(?P<matched>url\((?P<quote>['"]{0,1})"""
+                r"""\s*(?P<url>.*?)(?P=quote)\))""",
+                (
+                    r"""(?P<matched>@import\s*["']\s*(?P<url>.*?)["'])""",
+                    """@import url("%(url)s")""",
+                ),
+                (
+                    (
+                        r"(?m)^(?P<matched>/\*#[ \t]"
+                        r"(?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*\*/)$"
+                    ),
+                    "/*# sourceMappingURL=%(url)s */",
+                ),
+            ),
+        ),
+        (
+            "*.js",
+            (
+                (
+                    r"(?m)^(?P<matched>//# (?-i:sourceMappingURL)=(?P<url>.*?)\s*)$",
+                    "//# sourceMappingURL=%(url)s",
+                ),
+            ),
+        ),
+    )
+
+    # Override to fix cross-statement boundary matching caused by (?s:.*?) in
+    # Django's upstream patterns. Use [^;]*? to prevent an import/export from
+    # consuming tokens that belong to the next statement.
+    _js_module_import_aggregation_patterns = (
+        "*.js",
+        (
+            (
+                (
+                    r"""(?m)^\s*(?P<matched>(?-i:import)"""
+                    r"""(?P<import>[\s\{][^;]*?|\*\s*as\s*\w+)"""
+                    r"""\s*from\s*['"](?P<url>[./].*?)["']\s*;)"""
+                ),
+                """import%(import)s from "%(url)s";""",
+            ),
+            (
+                (
+                    r"""(?m)^\s*(?P<matched>(?-i:import)"""
+                    r"""(?P<import>[\s\{][^;]*?|\*\s*as\s*\w+)"""
+                    r"""\s*from\s*['"](?P<url>[./].*?)["']"""
+                    r"""\s*(?P<attributes>with\s*\{[^}]*\})\s*;)"""
+                ),
+                """import%(import)s from "%(url)s" %(attributes)s;""",
+            ),
+            (
+                (
+                    r"""(?m)^\s*(?P<matched>(?-i:export)(?P<exports>[\s\{][^;]*?)"""
+                    r"""\s*from\s*["'](?P<url>[./].*?)["']\s*;)"""
+                ),
+                """export%(exports)s from "%(url)s";""",
+            ),
+            (
+                (
+                    r"""(?m)^\s*(?P<matched>(?-i:export)(?P<exports>[\s\{][^;]*?)"""
+                    r"""\s*from\s*["'](?P<url>[./].*?)["']"""
+                    r"""\s*(?P<attributes>with\s*\{[^}]*\})\s*;)"""
+                ),
+                """export%(exports)s from "%(url)s" %(attributes)s;""",
+            ),
+            (
+                r"""(?m)^\s*(?P<matched>import\s*['"](?P<url>[./].*?)["']\s*;)""",
+                """import"%(url)s";""",
+            ),
+            (
+                r"""(?P<matched>import\(["'](?P<url>.*?)["']\))""",
+                """import("%(url)s")""",
+            ),
+        ),
+    )
+
+    def get_ignored_blocks(self, content, for_js=False):
+        """
+        Return a sorted list of (start, end) tuples for content that should
+        be ignored during URL rewriting: block comments and string literals
+        for CSS, plus line comments (// ...) and template literals (`...`)
+        for JS.
+        """
+        pattern = _js_ignored_re if for_js else _css_ignored_re
+        return [(m.start(), m.end()) for m in re.finditer(pattern, content)]
+
+    def is_in_ignored_block(self, pos, ignored_blocks):
+        for start, end in ignored_blocks:
+            if start < pos < end:
+                return True
+            if pos < start:
+                return False
+        return False
+
     def url(self, name, force=False):
         if settings.DEBUG and not force:
             return self._validate_url(name, force)
@@ -309,9 +431,14 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         Each function receives (name, content) and returns a list of
         (url, position) tuples.
         """
+        if self.use_lexer:
+            return {
+                "*.css": [self._process_css_urls, self._process_sourcemap],
+                "*.js": [self._process_js_modules, self._process_sourcemap],
+            }
         return {
-            "*.css": [self._process_css_urls, self._process_sourcemap],
-            "*.js": [self._process_js_modules, self._process_sourcemap],
+            "*.css": [self._process_css_urls],
+            "*.js": [self._process_js_modules],
         }
 
     def _get_url_finders(self, name):
@@ -398,38 +525,52 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         """Process JavaScript import/export statements."""
         url_positions = []
 
-        if not self.support_js_module_import_aggregation or not matches_patterns(
-            name, ("*.js",)
-        ):
+        if not matches_patterns(name, ("*.js",)):
             return url_positions
 
-        # simple search rules out most js files quickly
-        complex_adjustments = "import" in content or (
-            "export" in content and "from" in content
-        )
+        if self.use_lexer:
+            if not self.support_js_module_import_aggregation:
+                return url_positions
 
-        if not complex_adjustments:
-            return url_positions
-
-        # The simple search still leave lots of falst positives,
-        # like the words important or exports
-        # Match for import export syntax to futher reduce the need
-        # to run the lexer, should cut out 90% of false positives
-        if not self.import_export_pattern.search(content):
-            return url_positions
-
-        try:
-            urls = find_import_export_strings(
-                content,
-                should_ignore_url=lambda url: self._should_ignore_url(name, url),
+            # simple search rules out most js files quickly
+            complex_adjustments = "import" in content or (
+                "export" in content and "from" in content
             )
-        except ValueError as e:
-            message = e.args[0] if len(e.args) else ""
-            message = f"The js file '{name}' could not be processed.\n{message}"
-            raise StaticFileProcessingError(name) from ValueError(message)
-        for url_name, position in urls:
-            if self._should_adjust_url(url_name):
-                url_positions.append((url_name, position))
+
+            if not complex_adjustments:
+                return url_positions
+
+            # The simple search still leave lots of falst positives,
+            # like the words important or exports
+            # Match for import export syntax to futher reduce the need
+            # to run the lexer, should cut out 90% of false positives
+            if not self.import_export_pattern.search(content):
+                return url_positions
+
+            try:
+                urls = find_import_export_strings(
+                    content,
+                    should_ignore_url=lambda url: self._should_ignore_url(name, url),
+                )
+            except ValueError as e:
+                message = e.args[0] if len(e.args) else ""
+                message = f"The js file '{name}' could not be processed.\n{message}"
+                raise StaticFileProcessingError(name) from ValueError(message)
+            for url_name, position in urls:
+                if self._should_adjust_url(url_name):
+                    url_positions.append((url_name, position))
+        else:
+            ignored_blocks = self.get_ignored_blocks(content, for_js=True)
+            patterns = self._patterns.get("*.js", [])
+            if not any(p.search(content) for p, _ in patterns):
+                return url_positions
+            for pattern, _ in patterns:
+                for match in pattern.finditer(content):
+                    if self.is_in_ignored_block(match.start(), ignored_blocks):
+                        continue
+                    url = match.group("url")
+                    if self._should_adjust_url(url):
+                        url_positions.append((url, match.start("url")))
 
         return url_positions
 
@@ -449,15 +590,32 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         url_positions = []
         if not matches_patterns(name, ("*.css",)):
             return url_positions
-        search_content = content.lower()
-        complex_adjustments = "url(" in search_content or "@import" in search_content
 
-        if not complex_adjustments:
-            return url_positions
+        if self.use_lexer:
+            search_content = content.lower()
+            complex_adjustments = (
+                "url(" in search_content or "@import" in search_content
+            )
 
-        for url_name, position in extract_css_urls(content):
-            if self._should_adjust_url(url_name):
-                url_positions.append((url_name, position))
+            if not complex_adjustments:
+                return url_positions
+
+            for url_name, position in extract_css_urls(content):
+                if self._should_adjust_url(url_name):
+                    url_positions.append((url_name, position))
+        else:
+            ignored_blocks = self.get_ignored_blocks(content)
+            patterns = self._patterns.get("*.css", [])
+            if not any(p.search(content) for p, _ in patterns):
+                return url_positions
+            for pattern, _ in patterns:
+                for match in pattern.finditer(content):
+                    if self.is_in_ignored_block(match.start(), ignored_blocks):
+                        continue
+                    url = match.group("url")
+                    if self._should_adjust_url(url):
+                        url_positions.append((url, match.start("url")))
+
         return url_positions
 
     def _process_sourcemap(self, name, content):
@@ -845,6 +1003,7 @@ class EnhancedManifestStaticFilesStorage(
         manifest_strict=None,
         keep_original_files=None,
         ignore_errors=None,
+        use_lexer=None,
         *args,
         **kwargs,
     ):
@@ -865,6 +1024,8 @@ class EnhancedManifestStaticFilesStorage(
             self.ignore_errors = ignore_errors
         else:
             self.ignore_errors = []
+        if use_lexer is not None:
+            self.use_lexer = use_lexer
         super().__init__(location, base_url, *args, **kwargs)
 
 

@@ -805,17 +805,13 @@ class TestCollectionSimpleStorage(CollectionTestCase):
             self.assertIn(b"other.deploy12345.css", content)
 
 
-@override_settings(
-    STORAGES={
-        **settings.STORAGES,
-        STATICFILES_STORAGE_ALIAS: {
-            "BACKEND": (
-                "staticfiles_tests.storage." "JSModuleImportAggregationManifestStorage"
-            ),
-        },
-    }
-)
-class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase):
+class JSModuleImportAggregationTestMixin:
+    """
+    Shared assertions for both use_lexer=True and use_lexer=False paths.
+    Tests that differ between paths (template literal handling, exact hashes)
+    are left to each subclass.
+    """
+
     hashed_file_path = hashed_file_path
 
     def _get_filename_path(self, filename):
@@ -829,7 +825,6 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
 
     def test_module_import(self):
         relpath = self.hashed_file_path("cached/module.js")
-        self.assertEqual(relpath, "cached/module.7a0f6282224e.js")
         tests = [
             # Relative imports.
             b'import testConst from "./module_test.477bbebe77f0.js";',
@@ -837,10 +832,9 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
             b'import { firstConst, secondConst } from "./module_test.477bbebe77f0.js";',
             # Absolute import.
             b'import rootConst from "/static/absolute_root.5586327fe78c.js";',
-            # Dynamic import.
+            # Dynamic imports (single/double quotes — processed by both paths).
             b'const dynamicModule = import("./module_test.477bbebe77f0.js");',
             b"const dynamicModule = import('./module_test.477bbebe77f0.js');",
-            b"const dynamicModule = import(`./module_test.477bbebe77f0.js`);",
             # Creating a module object.
             b'import * as NewModule from "./module_test.477bbebe77f0.js";',
             # Creating a minified module object.
@@ -854,9 +848,9 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
             b"    firstVar1 as firstVarAlias,\n"
             b"    $second_var_2 as secondVarAlias\n"
             b'} from "./module_test.477bbebe77f0.js";',
-            # With attribute
+            # With attribute (import assertions).
             b'import k from"./other.d41d8cd98f00.css"with{type:"css"};',
-            # Unprocessed
+            # Unprocessed: comments and string literals (ignored by both paths).
             b'// @returns {import("./non-existent-1").something}',
             b'/* @returns {import("./non-existent-2").something} */',
             b"'import(\"./non-existent-3\")'",
@@ -873,10 +867,18 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
             for module_import in tests:
                 with self.subTest(module_import=module_import):
                     self.assertIn(module_import, content)
+            self._assert_template_literal_import(content)
+
+    def _assert_template_literal_import(self, content):
+        """
+        Assert behavior for template literal dynamic imports. The two paths
+        differ: the lexer processes backtick imports; the regex path ignores
+        them (its pattern only matches single/double quotes).
+        """
+        raise NotImplementedError
 
     def test_aggregating_modules(self):
         relpath = self.hashed_file_path("cached/module.js")
-        self.assertEqual(relpath, "cached/module.7a0f6282224e.js")
         tests = [
             b'export * from "./module_test.477bbebe77f0.js";',
             b'export { testConst } from "./module_test.477bbebe77f0.js";',
@@ -890,6 +892,107 @@ class TestCollectionJSModuleImportAggregationManifestStorage(CollectionTestCase)
             for module_import in tests:
                 with self.subTest(module_import=module_import):
                     self.assertIn(module_import, content)
+
+
+@override_settings(
+    STORAGES={
+        **settings.STORAGES,
+        STATICFILES_STORAGE_ALIAS: {
+            "BACKEND": (
+                "staticfiles_tests.storage.JSModuleImportAggregationManifestStorage"
+            ),
+        },
+    }
+)
+class TestCollectionJSModuleImportAggregationManifestStorage(
+    JSModuleImportAggregationTestMixin, CollectionTestCase
+):
+    """
+    JS module import aggregation with use_lexer=False (regex / comment-aware path).
+
+    Template literal dynamic imports (backtick syntax) are not processed because
+    the regex patterns only match single/double-quoted strings.
+    """
+
+    def _assert_template_literal_import(self, content):
+        # Backtick imports are not matched by the regex patterns, so the URL
+        # remains unhashed.
+        self.assertIn(b"const dynamicModule = import(`./module_test.js`);", content)
+        self.assertNotIn(b"import(`./module_test.477bbebe77f0.js`)", content)
+
+    def test_module_import(self):
+        relpath = self.hashed_file_path("cached/module.js")
+        # Hash differs from the lexer path because the backtick import is not
+        # processed, leaving the URL unhashed.
+        self.assertNotEqual(relpath, "cached/module.7a0f6282224e.js")
+        super().test_module_import()
+
+    def test_aggregating_modules(self):
+        relpath = self.hashed_file_path("cached/module.js")
+        self.assertNotEqual(relpath, "cached/module.7a0f6282224e.js")
+        super().test_aggregating_modules()
+
+    def test_template_literal_not_processed(self):
+        """
+        Template literal dynamic imports with variables are silently ignored
+        in the regex path: the pattern never matches backtick syntax, so no
+        error is raised and the line passes through unchanged.
+        """
+        file_contents = (
+            ("dynamic_import.js", "import(`./${module_name}`);"),
+            ("module.js", "this"),
+        )
+        for filename, content in file_contents:
+            with open(self._get_filename_path(filename), "w") as f:
+                f.write(content)
+
+        with self.modify_settings(STATICFILES_DIRS={"append": self._temp_dir}):
+            finders.get_finder.cache_clear()
+            err = StringIO()
+            # No error: backtick imports are not matched.
+            call_command("collectstatic", interactive=False, verbosity=0, stderr=err)
+            relpath = self.hashed_file_path("test/dynamic_import.js")
+            with storage.staticfiles_storage.open(relpath) as relfile:
+                content = relfile.read()
+                self.assertIn(b"./${module_name}", content)
+
+
+@override_settings(
+    STORAGES={
+        **settings.STORAGES,
+        STATICFILES_STORAGE_ALIAS: {
+            "BACKEND": (
+                "staticfiles_tests.storage."
+                "JSModuleImportAggregationManifestStorageLexer"
+            ),
+        },
+    }
+)
+class TestCollectionJSModuleImportAggregationManifestStorageLexer(
+    JSModuleImportAggregationTestMixin, CollectionTestCase
+):
+    """
+    JS module import aggregation with use_lexer=True (jslex path).
+
+    Template literal dynamic imports (backtick syntax) are fully processed
+    when they contain no variable interpolation.
+    """
+
+    def _assert_template_literal_import(self, content):
+        # The jslex lexer processes backtick imports.
+        self.assertIn(
+            b"const dynamicModule = import(`./module_test.477bbebe77f0.js`);", content
+        )
+
+    def test_module_import(self):
+        relpath = self.hashed_file_path("cached/module.js")
+        self.assertEqual(relpath, "cached/module.7a0f6282224e.js")
+        super().test_module_import()
+
+    def test_aggregating_modules(self):
+        relpath = self.hashed_file_path("cached/module.js")
+        self.assertEqual(relpath, "cached/module.7a0f6282224e.js")
+        super().test_aggregating_modules()
 
     def test_template_literal_with_variables(self):
         """Test that template literals with variables raise an appropriate error."""
