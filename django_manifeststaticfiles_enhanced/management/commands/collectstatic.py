@@ -142,7 +142,11 @@ class Command(DjangoCollectstaticCommand):
                 if isinstance(processed, Exception):
                     self.stderr.write("Post-processing '%s' failed!" % original_path)
                     self.stderr.write()
-                    raise processed
+                    # Re-raise exceptions as CommandError and display notes.
+                    message = str(processed)
+                    if hasattr(processed, "__notes__"):
+                        message += "\n" + "\n".join(processed.__notes__)
+                    raise CommandError(message) from processed
                 if processed:
                     self.log(
                         "Post-processed '%s' as '%s'" % (original_path, processed_path),
