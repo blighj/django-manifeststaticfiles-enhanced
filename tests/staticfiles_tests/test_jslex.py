@@ -497,49 +497,49 @@ class FindImportExportStringsTest(SimpleTestCase):
     def test_import_statement_simple(self):
         """Test simple import statement."""
         js = 'import "module.js";'
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 1)
         self.assertEqual(imports[0][0], "module.js")
 
     def test_import_statement_from(self):
         """Test import with from clause."""
         js = 'import { func } from "module.js";'
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 1)
         self.assertEqual(imports[0][0], "module.js")
 
     def test_import_statement_default(self):
         """Test default import."""
         js = 'import React from "react.js";'
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 1)
         self.assertEqual(imports[0][0], "react.js")
 
     def test_import_dynamic(self):
         """Test dynamic import."""
         js = 'import("module.js").then(m => m.default);'
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 1)
         self.assertEqual(imports[0][0], "module.js")
 
     def test_export_from(self):
         """Test export from statement."""
         js = 'export { func } from "module.js";'
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 1)
         self.assertEqual(imports[0][0], "module.js")
 
     def test_export_star_from(self):
         """Test export * from statement."""
         js = 'export * from "module.js";'
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 1)
         self.assertEqual(imports[0][0], "module.js")
 
     def test_export_star_as_from(self):
         """Test export * as from statement."""
         js = 'export * as utils from "utils.js";'
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 1)
         self.assertEqual(imports[0][0], "utils.js")
 
@@ -551,7 +551,7 @@ class FindImportExportStringsTest(SimpleTestCase):
         import utils from "./utils.js";
         export { helper } from "./helper.js";
         """
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 4)
         import_values = [imp[0] for imp in imports]
         self.assertIn("react.js", import_values)
@@ -562,16 +562,16 @@ class FindImportExportStringsTest(SimpleTestCase):
     def test_export_without_from(self):
         """Test export without from (should not be captured)."""
         js = "export const value = 42;"
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 0)
         js = 'export const value = 42; export { helper } from "./helper.js";'
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 1)
         js = 'export { variable }; export { helper } from "./helper.js";'
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 1)
         js = 'export { variable }\n export { helper } from "./helper.js";'
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 1)
 
     def test_import_with_comments(self):
@@ -586,7 +586,7 @@ class FindImportExportStringsTest(SimpleTestCase):
         import { Component } from /* "oldreact.js" */ "react.js";
         import(/* "oldreact.js" */ "react.js")
         """
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 4)
         import_values = [imp[0] for imp in imports]
         self.assertEqual(import_values.count("react.js"), 4)
@@ -601,7 +601,7 @@ class FindImportExportStringsTest(SimpleTestCase):
         */
         import { Component } from /* "oldmodule.js" */ "module.js";
         """
-        exports = find_import_export_strings(js)
+        exports, _ = find_import_export_strings(js)
         self.assertEqual(len(exports), 2)
         export_values = [imp[0] for imp in exports]
         self.assertEqual(export_values.count("module.js"), 2)
@@ -614,7 +614,7 @@ class FindImportExportStringsTest(SimpleTestCase):
             return x * 2;
         }
         """
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 0)
 
     def test_poor_syntax(self):
@@ -623,7 +623,7 @@ class FindImportExportStringsTest(SimpleTestCase):
         import utils for "./utils.js";
         export *;
         """
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 0)
 
     def test_template_literal_with_import_like_content(self):
@@ -632,7 +632,7 @@ class FindImportExportStringsTest(SimpleTestCase):
         const code = `import React from "react";`;
         import utils from "./utils.js";
         """
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         # Should only capture the actual import, not the template literal content
         self.assertEqual(len(imports), 1)
         self.assertEqual(imports[0][0], "./utils.js")
@@ -645,7 +645,7 @@ class FindImportExportStringsTest(SimpleTestCase):
         import * as name from "namespace.js";
         import defaultExport, * as name from "mixed.js";
         """
-        imports = find_import_export_strings(js)
+        imports, _ = find_import_export_strings(js)
         self.assertEqual(len(imports), 4)
         import_values = [imp[0] for imp in imports]
         self.assertIn("module.js", import_values)

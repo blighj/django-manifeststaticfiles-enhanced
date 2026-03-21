@@ -1,3 +1,4 @@
+import json
 import os
 import posixpath
 import re
@@ -202,6 +203,7 @@ class StaticFileProcessingError(ValueError):
 
 
 class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
+    django_static_calls = []
 
     use_lexer = False
 
@@ -536,22 +538,28 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             complex_adjustments = "import" in content or (
                 "export" in content and "from" in content
             )
+            has_django_static = "django.static" in content
 
-            if not complex_adjustments:
+            if not complex_adjustments and not has_django_static:
                 return url_positions
 
-            # The simple search still leave lots of falst positives,
+            # The simple search still leave lots of false positives,
             # like the words important or exports
             # Match for import export syntax to futher reduce the need
             # to run the lexer, should cut out 90% of false positives
-            if not self.import_export_pattern.search(content):
+            if (
+                not complex_adjustments
+                and not has_django_static
+                and not self.import_export_pattern.search(content)
+            ):
                 return url_positions
 
             try:
-                urls = find_import_export_strings(
+                urls, django_static_calls = find_import_export_strings(
                     content,
                     should_ignore_url=lambda url: self._should_ignore_url(name, url),
                 )
+                self.django_static_calls += django_static_calls
             except ValueError as e:
                 message = e.args[0] if len(e.args) else ""
                 message = f"The js file '{name}' could not be processed.\n{message}"
@@ -560,17 +568,28 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 if self._should_adjust_url(url_name):
                     url_positions.append((url_name, position))
         else:
-            ignored_blocks = self.get_ignored_blocks(content, for_js=True)
             patterns = self._patterns.get("*.js", [])
-            if not any(p.search(content) for p, _ in patterns):
+            has_url_patterns = any(p.search(content) for p, _ in patterns)
+            has_django_static = "django.static" in content
+
+            if not has_url_patterns and not has_django_static:
                 return url_positions
-            for pattern, _ in patterns:
-                for match in pattern.finditer(content):
-                    if self.is_in_ignored_block(match.start(), ignored_blocks):
-                        continue
-                    url = match.group("url")
-                    if self._should_adjust_url(url):
-                        url_positions.append((url, match.start("url")))
+
+            ignored_blocks = self.get_ignored_blocks(content, for_js=True)
+
+            if has_url_patterns:
+                for pattern, _ in patterns:
+                    for match in pattern.finditer(content):
+                        if self.is_in_ignored_block(match.start(), ignored_blocks):
+                            continue
+                        url = match.group("url")
+                        if self._should_adjust_url(url):
+                            url_positions.append((url, match.start("url")))
+
+            if has_django_static:
+                for match in self.django_static_pattern.finditer(content):
+                    if not self.is_in_ignored_block(match.start(), ignored_blocks):
+                        self.django_static_calls.append(match.group("asset"))
 
         return url_positions
 
@@ -584,6 +603,11 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         # check for the word export must be followed
         r"\bexport[\s{/*])",
         re.MULTILINE,
+    )
+
+    django_static_pattern = re.compile(
+        # Match django.static("asset") or django.static('asset')
+        r"""django\.static\(\s*(?P<quote>['"])(?P<asset>[^'"]+)(?P=quote)\s*\)"""
     )
 
     def _process_css_urls(self, name, content):
@@ -972,12 +996,112 @@ class EnhancedManifestFilesMixin(EnhancedHashedFilesMixin, ManifestFilesMixin):
     """
 
     keep_original_files = True
+    staticjs_path = "staticjs/django.js"
 
     def post_process(self, *args, **kwargs):
         self.hashed_files = {}
+        self.django_static_calls = []
         yield from super().post_process(*args, **kwargs)
         if not kwargs.get("dry_run"):
             self.save_manifest()
+
+            staticjs_result = self._create_staticjs_manifest(self.django_static_calls)
+            if staticjs_result:
+                yield staticjs_result
+
+    def _create_staticjs_manifest(self, referenced_assets):
+        """
+        Create a hashed version of django.js with manifest static paths.
+
+        Args:
+            referenced_assets: List of assets to include
+        """
+        # Skip if hashed_files is empty
+        if not self.hashed_files:
+            return
+
+        if self.staticjs_path not in self.hashed_files:
+            return
+        existing = self.hashed_files[self.staticjs_path]
+        if self.exists(existing):
+            self.delete(existing)
+
+        # Get filtered paths for static files
+        static_dict = self._get_filtered_static_paths(referenced_assets)
+
+        # Create the production version of django.js with the static dictionary
+        js_content = self._generate_staticjs_content(static_dict)
+
+        django_js = ContentFile(js_content.encode())
+        hashed_name = self.hashed_name(self.staticjs_path, django_js)
+
+        if not self.exists(hashed_name):
+            saved_name = self._save(hashed_name, django_js)
+            hashed_name = self.clean_name(saved_name)
+
+            self.hashed_files[self.hash_key(self.clean_name(self.staticjs_path))] = (
+                hashed_name
+            )
+
+            self.save_manifest()
+
+        return (self.staticjs_path, hashed_name, True)
+
+    def _get_filtered_static_paths(self, referenced_assets):
+        """
+        Get filtered static paths based on referenced assets.
+        Returns a dictionary of static paths with their hashed versions.
+
+        Args:
+            referenced_assets: List of assets to include
+        """
+        filtered_dict = {}
+
+        for name, hashed_name in self.hashed_files.items():
+            # Skip the django.js file itself (avoid self-reference)
+            if name == self.hash_key(self.clean_name(self.staticjs_path)):
+                continue
+
+            # New behavior: include only referenced assets
+            # or assets that don't match exclude patterns
+            if name not in referenced_assets:
+                continue
+
+            filtered_dict[name] = hashed_name
+
+        return filtered_dict
+
+    def _generate_staticjs_content(self, static_dict):
+        """
+        Generate the JavaScript content with the static dictionary.
+        """
+        static_dict_str = json.dumps(static_dict, separators=(",", ":"))
+        static_function = (
+            "'use strict';"
+            "{"
+            "const globals = this || globalThis || window || self || {};"
+            "const django = globals.django || (globals.django = {});"
+            'let STATIC_URL = "/static/";'
+            'const scriptTag = document.getElementById("staticjs-static-url");'
+            "if (scriptTag && scriptTag.dataset && scriptTag.dataset.staticUrl) {"
+            "STATIC_URL = scriptTag.dataset.staticUrl;"
+            "}"
+            f"const strict = {str(self.manifest_strict).lower()};"
+            f"const staticPaths = {static_dict_str};"
+            "django.static = function(asset) {"
+            "if (asset in staticPaths) {"
+            "return `${STATIC_URL}${staticPaths[asset]}`;"
+            "}"
+            "if (strict) {"
+            "console.error(`Static file '${asset}' not found in manifest`);"
+            "return"
+            "}"
+            "return staticPaths[asset];"
+            "};"
+            "}"
+        )
+
+        return static_function
 
 
 class EnhancedManifestStaticFilesStorage(
@@ -992,6 +1116,7 @@ class EnhancedManifestStaticFilesStorage(
     - ticket_34322: JsLex for ES module support
     - ignore_errors: List of 'file:url' errors to ignore during post-processing
     - Thread-safe storage for parallel collectstatic operations
+    - staticjs: JavaScript utility to access hashed static files paths in JavaScript
     """
 
     def __init__(
@@ -1004,6 +1129,7 @@ class EnhancedManifestStaticFilesStorage(
         keep_original_files=None,
         ignore_errors=None,
         use_lexer=None,
+        staticjs_exclude_patterns=None,
         *args,
         **kwargs,
     ):
@@ -1018,6 +1144,10 @@ class EnhancedManifestStaticFilesStorage(
             self.manifest_strict = manifest_strict
         if keep_original_files is not None:
             self.keep_original_files = keep_original_files
+        if staticjs_exclude_patterns is not None:
+            if not isinstance(staticjs_exclude_patterns, list):
+                raise ImproperlyConfigured("staticjs_exclude_patterns must be a list")
+            self.staticjs_exclude_patterns = staticjs_exclude_patterns
         if ignore_errors is not None:
             if not isinstance(ignore_errors, list):
                 raise ImproperlyConfigured("ignore_errors must be a list")
