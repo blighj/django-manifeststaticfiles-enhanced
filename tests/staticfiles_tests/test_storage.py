@@ -1723,3 +1723,96 @@ class TestTestingManifestStaticFilesStorage(CollectionTestCase):
         self.assertStaticRaises(
             ValueError, "does/not/exist.png", "/static/does/not/exist.png"
         )
+
+
+class DjangoStaticDetectionTestMixin:
+    """
+    Shared assertions for django.static() call detection in JS files.
+
+    The fixture cached/django_static.js illustrates the intended usage pattern.
+    These tests call _process_js_modules directly so detection can be verified
+    without depending on collectstatic's internal storage instance.
+    Tests run against both paths via the two subclasses below.
+    """
+
+    # set in each subclass
+    storage_class = None
+
+    def setUp(self):
+        super().setUp()
+        self.st = self.storage_class()
+
+    def _detect(self, js_content):
+        self.st.django_static_calls = []
+        self.st._process_js_modules("app.js", js_content)
+        return self.st.django_static_calls
+
+    def test_calls_detected(self):
+        """Assets passed to django.static() are recorded."""
+        # mirrors the real calls in the fixture cached/django_static.js
+        js = (
+            'const logoUrl = django.static("cached/img/relative.png");\n'
+            "const iconUrl = django.static('cached/img/window.png');"
+        )
+        calls = self._detect(js)
+        self.assertIn("cached/img/relative.png", calls)
+        self.assertIn("cached/img/window.png", calls)
+
+    def test_line_comment_ignored(self):
+        """django.static() inside a // comment is not recorded."""
+        calls = self._detect(
+            '// const ignored = django.static("cached/img/relative.png");'
+        )
+        self.assertEqual(calls, [])
+
+    def test_block_comment_ignored(self):
+        """django.static() inside a /* */ comment is not recorded."""
+        calls = self._detect(
+            '/* const ignored = django.static("cached/img/relative.png"); */'
+        )
+        self.assertEqual(calls, [])
+
+    def test_real_call_alongside_comment(self):
+        """A real call is detected even when a commented call is present."""
+        js = (
+            '// django.static("cached/img/relative.png")\n'
+            'django.static("cached/img/window.png");'
+        )
+        calls = self._detect(js)
+        self.assertNotIn("cached/img/relative.png", calls)
+        self.assertIn("cached/img/window.png", calls)
+
+    def test_no_calls(self):
+        """Files with no django.static() calls produce an empty list."""
+        calls = self._detect("const x = 1; console.log(x);")
+        self.assertEqual(calls, [])
+
+    def test_non_js_file_skipped(self):
+        """Non-JS files are not processed."""
+        self.st.django_static_calls = []
+        self.st._process_js_modules("style.css", 'django.static("a.png")')
+        self.assertEqual(self.st.django_static_calls, [])
+
+
+class TestDjangoStaticDetectionRegex(DjangoStaticDetectionTestMixin, SimpleTestCase):
+    """
+    django.static() detection via the default regex path (use_lexer=False).
+
+    The fixture cached/django_static.js demonstrates the intended usage:
+        const logoUrl = django.static("cached/img/relative.png");
+        const iconUrl = django.static('cached/img/window.png');
+    """
+
+    from staticfiles_tests.storage import DjangoStaticDetectionStorage
+
+    storage_class = DjangoStaticDetectionStorage
+
+
+class TestDjangoStaticDetectionLexer(DjangoStaticDetectionTestMixin, SimpleTestCase):
+    """
+    django.static() detection via the jslex tokeniser (use_lexer=True).
+    """
+
+    from staticfiles_tests.storage import DjangoStaticDetectionStorageLexer
+
+    storage_class = DjangoStaticDetectionStorageLexer

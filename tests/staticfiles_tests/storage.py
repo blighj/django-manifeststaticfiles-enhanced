@@ -111,3 +111,12 @@ class JSModuleImportAggregationManifestStorage(EnhancedManifestStaticFilesStorag
 class JSModuleImportAggregationManifestStorageLexer(EnhancedManifestStaticFilesStorage):
     support_js_module_import_aggregation = True
     use_lexer = True
+
+
+class DjangoStaticDetectionStorage(EnhancedManifestStaticFilesStorage):
+    use_lexer = False
+
+
+class DjangoStaticDetectionStorageLexer(EnhancedManifestStaticFilesStorage):
+    use_lexer = True
+    support_js_module_import_aggregation = True

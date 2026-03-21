@@ -465,9 +465,9 @@ def find_import_export_strings(file_contents, should_ignore_url=None):
             if export_details:
                 matches.append(export_details)
         elif name == "id" and value == "django":
-            export_details = _extract_django_static_calls(tokens, i, should_ignore_url)
-            if export_details:
-                django_static_calls.append(export_details)
+            asset_name = _extract_django_static_calls(tokens, i, should_ignore_url)
+            if asset_name:
+                django_static_calls.append(asset_name)
 
     return matches, django_static_calls
 
@@ -477,7 +477,6 @@ def _extract_django_static_calls(tokens, i, should_ignore_url):
         i + 3 < len(tokens)
         and tokens[i + 1][0] == "punct"
         and tokens[i + 1][1] == "."
-        and tokens[i + 2][0] == "id"
         and tokens[i + 2][1] == "static"
         and tokens[i + 3][0] == "punct"
         and tokens[i + 3][1] == "("
@@ -485,9 +484,10 @@ def _extract_django_static_calls(tokens, i, should_ignore_url):
         # Find the string argument
         arg_index = i + 4
         if arg_index < len(tokens) and tokens[arg_index][0] == "string":
-            # Extract the string without quotes
-            return _format_match(tokens[arg_index], should_ignore_url)
-    return False
+            # Extract the string without quotes (no position needed, just the name)
+            match = _format_match(tokens[arg_index], should_ignore_url)
+            return match[0] if match else None
+    return None
 
 
 def _extract_import_details(tokens, i, should_ignore_url):

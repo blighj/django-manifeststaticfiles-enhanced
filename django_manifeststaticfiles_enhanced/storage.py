@@ -538,15 +538,20 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             complex_adjustments = "import" in content or (
                 "export" in content and "from" in content
             )
+            has_django_static = "django.static" in content
 
-            if not complex_adjustments:
+            if not complex_adjustments and not has_django_static:
                 return url_positions
 
             # The simple search still leave lots of false positives,
             # like the words important or exports
             # Match for import export syntax to futher reduce the need
             # to run the lexer, should cut out 90% of false positives
-            if not self.import_export_pattern.search(content):
+            if (
+                not complex_adjustments
+                and not has_django_static
+                and not self.import_export_pattern.search(content)
+            ):
                 return url_positions
 
             try:
@@ -563,17 +568,28 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 if self._should_adjust_url(url_name):
                     url_positions.append((url_name, position))
         else:
-            ignored_blocks = self.get_ignored_blocks(content, for_js=True)
             patterns = self._patterns.get("*.js", [])
-            if not any(p.search(content) for p, _ in patterns):
+            has_url_patterns = any(p.search(content) for p, _ in patterns)
+            has_django_static = "django.static" in content
+
+            if not has_url_patterns and not has_django_static:
                 return url_positions
-            for pattern, _ in patterns:
-                for match in pattern.finditer(content):
-                    if self.is_in_ignored_block(match.start(), ignored_blocks):
-                        continue
-                    url = match.group("url")
-                    if self._should_adjust_url(url):
-                        url_positions.append((url, match.start("url")))
+
+            ignored_blocks = self.get_ignored_blocks(content, for_js=True)
+
+            if has_url_patterns:
+                for pattern, _ in patterns:
+                    for match in pattern.finditer(content):
+                        if self.is_in_ignored_block(match.start(), ignored_blocks):
+                            continue
+                        url = match.group("url")
+                        if self._should_adjust_url(url):
+                            url_positions.append((url, match.start("url")))
+
+            if has_django_static:
+                for match in self.django_static_pattern.finditer(content):
+                    if not self.is_in_ignored_block(match.start(), ignored_blocks):
+                        self.django_static_calls.append(match.group("asset"))
 
         return url_positions
 
@@ -587,6 +603,11 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         # check for the word export must be followed
         r"\bexport[\s{/*])",
         re.MULTILINE,
+    )
+
+    django_static_pattern = re.compile(
+        # Match django.static("asset") or django.static('asset')
+        r"""django\.static\(\s*(?P<quote>['"])(?P<asset>[^'"]+)(?P=quote)\s*\)"""
     )
 
     def _process_css_urls(self, name, content):
@@ -979,6 +1000,7 @@ class EnhancedManifestFilesMixin(EnhancedHashedFilesMixin, ManifestFilesMixin):
 
     def post_process(self, *args, **kwargs):
         self.hashed_files = {}
+        self.django_static_calls = []
         yield from super().post_process(*args, **kwargs)
         if not kwargs.get("dry_run"):
             self.save_manifest()
