@@ -415,6 +415,93 @@ class TestHashedFiles:
         self.assertEqual("Post-processing 'nonutf8.css' failed!\n\n", err.getvalue())
         self.assertPostCondition()
 
+    def test_missing_css_sourcemap_warns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with open(
+                os.path.join(temp_dir, "missing_sourcemap.css"), "w", newline="\n"
+            ) as f:
+                f.write(
+                    "* {outline: 1px solid red;}\n"
+                    "/*# sourceMappingURL=missing.css.map*/\n"
+                )
+            with override_settings(
+                STATICFILES_DIRS=[temp_dir],
+                STATICFILES_FINDERS=[
+                    "django.contrib.staticfiles.finders.FileSystemFinder"
+                ],
+            ):
+                finders.get_finder.cache_clear()
+                out = StringIO()
+                call_command(
+                    "collectstatic",
+                    interactive=False,
+                    verbosity=1,
+                    stdout=out,
+                )
+                self.assertIn("missing.css.map", out.getvalue())
+                self.assertPostCondition()
+
+    def test_missing_js_sourcemap_warns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with open(
+                os.path.join(temp_dir, "missing_sourcemap.js"), "w", newline="\n"
+            ) as f:
+                f.write("//# sourceMappingURL=missing.js.map\nlet a_variable = 1;\n")
+            with override_settings(
+                STATICFILES_DIRS=[temp_dir],
+                STATICFILES_FINDERS=[
+                    "django.contrib.staticfiles.finders.FileSystemFinder"
+                ],
+            ):
+                finders.get_finder.cache_clear()
+                out = StringIO()
+                call_command(
+                    "collectstatic",
+                    interactive=False,
+                    verbosity=1,
+                    stdout=out,
+                )
+                self.assertIn("missing.js.map", out.getvalue())
+                self.assertPostCondition()
+
+    def test_missing_sourcemap_leaves_reference_intact(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with open(
+                os.path.join(temp_dir, "missing_sourcemap.css"), "w", newline="\n"
+            ) as f:
+                f.write(
+                    "* {outline: 1px solid red;}\n"
+                    "/*# sourceMappingURL=missing.css.map*/\n"
+                )
+            with open(
+                os.path.join(temp_dir, "missing_sourcemap.js"), "w", newline="\n"
+            ) as f:
+                f.write("//# sourceMappingURL=missing.js.map\nlet a_variable = 1;\n")
+            with override_settings(
+                STATICFILES_DIRS=[temp_dir],
+                STATICFILES_FINDERS=[
+                    "django.contrib.staticfiles.finders.FileSystemFinder"
+                ],
+            ):
+                finders.get_finder.cache_clear()
+                call_command(
+                    "collectstatic",
+                    interactive=False,
+                    verbosity=0,
+                    stderr=StringIO(),
+                )
+                for filename, expected in [
+                    (
+                        "missing_sourcemap.css",
+                        b"/*# sourceMappingURL=missing.css.map*/",
+                    ),
+                    ("missing_sourcemap.js", b"//# sourceMappingURL=missing.js.map"),
+                ]:
+                    relpath = self.hashed_file_path(filename)
+                    with storage.staticfiles_storage.open(relpath) as relfile:
+                        self.assertIn(expected, relfile.read())
+                self.assertPostCondition()
+
 
 @override_settings(
     STORAGES={
@@ -1698,6 +1785,43 @@ class TestEnhancedManifestStorageOptions(CollectionTestCase):
         self.assertEqual(
             len(original_css_files), 0, "Original CSS file should have been deleted"
         )
+
+    def test_sourcemap_strict_raises_on_missing_map(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with open(os.path.join(temp_dir, "missing_sourcemap.css"), "w") as f:
+                f.write(
+                    "* {outline: 1px solid red;}\n"
+                    "/*# sourceMappingURL=missing.css.map*/\n"
+                )
+            with open(os.path.join(temp_dir, "missing_sourcemap.js"), "w") as f:
+                f.write("//# sourceMappingURL=missing.js.map\nlet a_variable = 1;\n")
+            with override_settings(
+                STATICFILES_DIRS=[temp_dir],
+                STATICFILES_FINDERS=[
+                    "django.contrib.staticfiles.finders.FileSystemFinder"
+                ],
+                STORAGES={
+                    **settings.STORAGES,
+                    STATICFILES_STORAGE_ALIAS: {
+                        "BACKEND": (
+                            "django_manifeststaticfiles_enhanced.storage."
+                            "EnhancedManifestStaticFilesStorage"
+                        ),
+                        "OPTIONS": {
+                            "sourcemap_strict": True,
+                        },
+                    },
+                },
+            ):
+                finders.get_finder.cache_clear()
+                with self.assertRaises(CommandError) as cm:
+                    call_command(
+                        "collectstatic",
+                        interactive=False,
+                        verbosity=0,
+                        stderr=StringIO(),
+                    )
+                self.assertIsInstance(cm.exception.__cause__, ValueError)
 
 
 @override_settings(

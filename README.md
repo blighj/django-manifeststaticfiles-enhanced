@@ -116,6 +116,24 @@ STORAGES = {
 }
 ```
 
+#### Raising missing Sourcemap warnings to exceptions
+
+By default missing sourcmap links in js/css files will not cuase an exception
+that prevents other processing, but will only produce a warning. This can be
+changed to an exceoption, like in django by setting `sourcemap_strict`.
+
+```python
+# settings.py
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "django_manifeststaticfiles_enhanced.storage.EnhancedManifestStaticFilesStorage",
+        "OPTIONS": {
+            "sourcemap_strict": True,
+        },
+    },
+}
+```
+
 #### Easy access to existing options
 Disable [manifest_strict](https://docs.djangoproject.com/en/5.2/ref/contrib/staticfiles/#django.contrib.staticfiles.storage.ManifestStaticFilesStorage.manifest_strict)
 ```python
@@ -269,6 +287,9 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the BSD 3-Clause License - the same license as Django.
 
 ## Changelog
+
+### dev
+ - Only warn on missing sourcemaps, with `sourcemap_strict` option to restore old behaviour of ending all proceesing with an error.
 
 ### 0.8.0
  - Added improved regex approach and made the lexer opt-in via use_lexer param
