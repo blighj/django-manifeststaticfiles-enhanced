@@ -288,13 +288,16 @@ This project is licensed under the BSD 3-Clause License - the same license as Dj
 
 ## Changelog
 
-### dev
+### 0.9.0
+
  - Only warn on missing sourcemaps, with `sourcemap_strict` option to restore old behaviour of ending all proceesing with an error.
 
 ### 0.8.0
+
  - Added improved regex approach and made the lexer opt-in via use_lexer param
 
 ### 0.7.0
+
  - Add collectstatic command with parallelization, which can be customized with  --parallel option
 
 ### 0.6.0
