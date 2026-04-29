@@ -228,7 +228,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 (
                     (
                         r"(?m)^(?P<matched>/\*#[ \t]"
-                        r"(?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*\*/)$"
+                        r"(?-i:sourceMappingURL)=(?P<url>.*?)[ \t]*\*/)\s*$"
                     ),
                     "/*# sourceMappingURL=%(url)s */",
                 ),
