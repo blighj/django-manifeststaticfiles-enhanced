@@ -353,23 +353,36 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         """
         substitutions_dict = self._find_substitutions(paths)
         for name, url_positions in substitutions_dict.items():
-            for url, _, is_sourcemap in url_positions:
+            storage, path = paths[name]
+            with storage.open(path) as f:
+                content = f.read().decode("utf-8")
+            for url, position, is_sourcemap in url_positions:
                 try:
                     self._adjust_url(url, name, paths)
                 except ValueError as exc:
                     if self._should_ignore_url(name, url):
                         pass
                     elif is_sourcemap and not self.sourcemap_strict:
+                        line = _line_at_position(content, position)
                         self._sourcemap_warnings.append(
                             (
                                 name,
                                 SourcemapWarning(
                                     f"{name!r}: sourcemap reference {url!r} "
+                                    "on line {line} "
                                     "could not be resolved"
                                 ),
                             )
                         )
                     else:
+                        line = _line_at_position(content, position)
+                        note = (
+                            f"{name!r} contains this reference {url!r} on line {line}"
+                        )
+                        if hasattr(exc, "add_note"):
+                            exc.add_note(note)
+                        else:
+                            exc.args = (f"{exc.args[0]}\n{note}" if exc.args else note,)
                         raise StaticFileProcessingError(name) from exc
 
     def _post_process(self, paths):
