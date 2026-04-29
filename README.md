@@ -116,11 +116,11 @@ STORAGES = {
 }
 ```
 
-#### Raising missing Sourcemap warnings to exceptions
+#### Raising missing Sourcemap warnings as exceptions
 
-By default missing sourcmap links in js/css files will not cuase an exception
+Unlike django, missing sourcmap links in js/css files will not cuase an exception
 that prevents other processing, but will only produce a warning. This can be
-changed to an exceoption, like in django by setting `sourcemap_strict`.
+changed to an exceoption to match django by setting `sourcemap_strict`.
 
 ```python
 # settings.py
