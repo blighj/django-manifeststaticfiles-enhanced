@@ -201,9 +201,14 @@ class StaticFileProcessingError(ValueError):
         self.file_name = file_name
 
 
+class SourcemapWarning(UserWarning):
+    pass
+
+
 class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
     use_lexer = False
+    sourcemap_strict = False
 
     # Override Django's base patterns to fix greedy .* in source map patterns.
     # The greedy .* captures trailing whitespace (tabs, spaces) into the url
@@ -326,10 +331,13 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         If either of these are performed on a file, then that file is
         considered post-processed.
         """
+        self._sourcemap_warnings = []
         try:
             # if we're in dry run, still find urls and raise any exceptions
             if dry_run:
                 self._test_url_substitutions(paths)
+                for warn_name, warning in self._sourcemap_warnings:
+                    yield warn_name, warn_name, warning
                 return
 
             # Process files using the dependency graph
@@ -345,11 +353,36 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         """
         substitutions_dict = self._find_substitutions(paths)
         for name, url_positions in substitutions_dict.items():
-            for url, _ in url_positions:
+            storage, path = paths[name]
+            with storage.open(path) as f:
+                content = f.read().decode("utf-8")
+            for url, position, is_sourcemap in url_positions:
                 try:
                     self._adjust_url(url, name, paths)
                 except ValueError as exc:
-                    if not self._should_ignore_url(name, url):
+                    if self._should_ignore_url(name, url):
+                        pass
+                    elif is_sourcemap and not self.sourcemap_strict:
+                        line = _line_at_position(content, position)
+                        self._sourcemap_warnings.append(
+                            (
+                                name,
+                                SourcemapWarning(
+                                    f"{name!r}: sourcemap reference {url!r} "
+                                    "on line {line} "
+                                    "could not be resolved"
+                                ),
+                            )
+                        )
+                    else:
+                        line = _line_at_position(content, position)
+                        note = (
+                            f"{name!r} contains this reference {url!r} on line {line}"
+                        )
+                        if hasattr(exc, "add_note"):
+                            exc.add_note(note)
+                        else:
+                            exc.args = (f"{exc.args[0]}\n{note}" if exc.args else note,)
                         raise StaticFileProcessingError(name) from exc
 
     def _post_process(self, paths):
@@ -410,6 +443,9 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             )
             hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
             yield name, hashed_name, processed
+            for warn_name, warning in self._sourcemap_warnings:
+                yield warn_name, warn_name, warning
+            self._sourcemap_warnings.clear()
 
         # Phase 3: Handle circular dependencies
         if circular_deps:
@@ -419,6 +455,9 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             for name, hashed_name in circular_hashes:
                 hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
                 yield name, hashed_name, True
+            for warn_name, warning in self._sourcemap_warnings:
+                yield warn_name, warn_name, warning
+            self._sourcemap_warnings.clear()
 
         # Store the processed paths
         self.hashed_files.update(hashed_files)
@@ -470,7 +509,11 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 url_positions = []
                 for finder in finders:
                     url_positions.extend(finder(name, content))
-                substitutions_dict[name] = url_positions
+                # Normalize to 3-tuples for backward compat with custom finders
+                # that return (url, position) 2-tuples without is_sourcemap.
+                substitutions_dict[name] = [
+                    item if len(item) == 3 else (*item, False) for item in url_positions
+                ]
         return substitutions_dict
 
     def _topological_sort(self, paths, substitutions_dict):
@@ -494,7 +537,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         # build the graph based on the substitutions_dict
         for name, url_positions in substitutions_dict.items():
             if url_positions:
-                for url_name, _ in url_positions:
+                for url_name, *_ in url_positions:
                     # normalise base.css, /static/base.css, ../base.css, etc
                     target = self._get_target_name(url_name, name)
                     graph_sorter.add(name, target)
@@ -558,19 +601,20 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 raise StaticFileProcessingError(name) from ValueError(message)
             for url_name, position in urls:
                 if self._should_adjust_url(url_name):
-                    url_positions.append((url_name, position))
+                    url_positions.append((url_name, position, False))
         else:
             ignored_blocks = self.get_ignored_blocks(content, for_js=True)
             patterns = self._patterns.get("*.js", [])
             if not any(p.search(content) for p, _ in patterns):
                 return url_positions
             for pattern, _ in patterns:
+                is_sourcemap = "sourceMappingURL" in pattern.pattern
                 for match in pattern.finditer(content):
                     if self.is_in_ignored_block(match.start(), ignored_blocks):
                         continue
                     url = match.group("url")
                     if self._should_adjust_url(url):
-                        url_positions.append((url, match.start("url")))
+                        url_positions.append((url, match.start("url"), is_sourcemap))
 
         return url_positions
 
@@ -602,19 +646,20 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
             for url_name, position in extract_css_urls(content):
                 if self._should_adjust_url(url_name):
-                    url_positions.append((url_name, position))
+                    url_positions.append((url_name, position, False))
         else:
             ignored_blocks = self.get_ignored_blocks(content)
             patterns = self._patterns.get("*.css", [])
             if not any(p.search(content) for p, _ in patterns):
                 return url_positions
             for pattern, _ in patterns:
+                is_sourcemap = "sourceMappingURL" in pattern.pattern
                 for match in pattern.finditer(content):
                     if self.is_in_ignored_block(match.start(), ignored_blocks):
                         continue
                     url = match.group("url")
                     if self._should_adjust_url(url):
-                        url_positions.append((url, match.start("url")))
+                        url_positions.append((url, match.start("url"), is_sourcemap))
 
         return url_positions
 
@@ -628,7 +673,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 for match in pattern.finditer(content):
                     url = match.group("url")
                     if self._should_adjust_url(url):
-                        url_positions.append((url, match.start("url")))
+                        url_positions.append((url, match.start("url"), True))
         return url_positions
 
     source_map_patterns = {
@@ -775,7 +820,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
     def _process_file_content(self, name, content, url_positions, hashed_files):
         """
         Process file content by substituting URLs.
-        url_positions is a list of (url, position) tuples.
+        url_positions is a list of (url, position, is_sourcemap) tuples.
         """
         if not url_positions:
             return content
@@ -789,7 +834,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             key=lambda x: x[1],
         )
 
-        for url, pos in sorted_positions:
+        for url, pos, is_sourcemap in sorted_positions:
             position = pos
             # Add content before this URL
             result_parts.append(content[last_position:position])
@@ -798,6 +843,18 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 transformed_url = self._adjust_url(url, name, hashed_files)
             except ValueError as exc:
                 if self._should_ignore_url(name, url):
+                    transformed_url = url
+                elif is_sourcemap and not self.sourcemap_strict:
+                    line = _line_at_position(content, position)
+                    self._sourcemap_warnings.append(
+                        (
+                            name,
+                            SourcemapWarning(
+                                f"{name!r}: sourcemap reference {url!r} on line {line} "
+                                "could not be resolved, leaving as-is"
+                            ),
+                        )
+                    )
                     transformed_url = url
                 else:
                     line = _line_at_position(content, position)
@@ -893,10 +950,10 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
                 # Filter URL positions to only non-circular dependencies
                 non_circular_positions = []
-                for url, pos in substitutions_dict.get(name, []):
+                for url, pos, is_sourcemap in substitutions_dict.get(name, []):
                     target = self._get_target_name(url, name)
                     if target not in circular_deps:
-                        non_circular_positions.append((url, pos))
+                        non_circular_positions.append((url, pos, is_sourcemap))
                 # Replace all non-circular URLs first
                 if non_circular_positions:
                     content = self._process_file_content(
@@ -1004,6 +1061,7 @@ class EnhancedManifestStaticFilesStorage(
         keep_original_files=None,
         ignore_errors=None,
         use_lexer=None,
+        sourcemap_strict=None,
         *args,
         **kwargs,
     ):
@@ -1026,6 +1084,8 @@ class EnhancedManifestStaticFilesStorage(
             self.ignore_errors = []
         if use_lexer is not None:
             self.use_lexer = use_lexer
+        if sourcemap_strict is not None:
+            self.sourcemap_strict = sourcemap_strict
         super().__init__(location, base_url, *args, **kwargs)
 
 

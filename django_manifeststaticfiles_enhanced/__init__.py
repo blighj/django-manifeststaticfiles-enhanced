@@ -9,7 +9,12 @@ __version__ = "0.8.0"
 
 from .storage import (
     EnhancedManifestStaticFilesStorage,
+    SourcemapWarning,
     TestingManifestStaticFilesStorage,
 )
 
-__all__ = ["EnhancedManifestStaticFilesStorage", "TestingManifestStaticFilesStorage"]
+__all__ = [
+    "EnhancedManifestStaticFilesStorage",
+    "SourcemapWarning",
+    "TestingManifestStaticFilesStorage",
+]
