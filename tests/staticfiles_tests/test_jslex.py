@@ -638,7 +638,6 @@ class FindImportExportStringsTest(SimpleTestCase):
         self.assertEqual(imports[0][0], "./utils.js")
 
     def test_complex_import_patterns(self):
-        """Test complex import patterns."""
         js = """
         import defaultExport, { export1, export2 } from "module.js";
         import { export1 as alias1 } from "aliased.js";
@@ -652,3 +651,27 @@ class FindImportExportStringsTest(SimpleTestCase):
         self.assertIn("aliased.js", import_values)
         self.assertIn("namespace.js", import_values)
         self.assertIn("mixed.js", import_values)
+
+    def test_import_from_used_as_binding_name(self):
+        js = "import { from } from './from.js';"
+        imports = find_import_export_strings(js)
+        self.assertEqual(len(imports), 1)
+        self.assertEqual(imports[0][0], "./from.js")
+
+    def test_import_star_as_from_used_as_alias(self):
+        js = "import * as from from './from.js';"
+        imports = find_import_export_strings(js)
+        self.assertEqual(len(imports), 1)
+        self.assertEqual(imports[0][0], "./from.js")
+
+    def test_export_brace_from_used_as_binding_name(self):
+        js = "export { from } from './from.js';"
+        imports = find_import_export_strings(js)
+        self.assertEqual(len(imports), 1)
+        self.assertEqual(imports[0][0], "./from.js")
+
+    def test_export_star_as_from_used_as_alias(self):
+        js = "export * as from from './from.js';"
+        imports = find_import_export_strings(js)
+        self.assertEqual(len(imports), 1)
+        self.assertEqual(imports[0][0], "./from.js")
