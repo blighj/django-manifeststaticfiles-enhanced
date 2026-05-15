@@ -498,10 +498,21 @@ def _extract_import_details(tokens, i, should_ignore_url):
     # import defaultExport, { export1, /* … */ } from "module-name";
     # import defaultExport, * as name from "module-name";
     else:
+        brace_depth = 0
         for j in range(i + 1, len(tokens)):
-            if tokens[j][0] == "punct" and tokens[j][1] == ";":
+            if tokens[j][0] == "punct" and tokens[j][1] == "{":
+                brace_depth += 1
+            elif tokens[j][0] == "punct" and tokens[j][1] == "}":
+                brace_depth -= 1
+            elif tokens[j][0] == "punct" and tokens[j][1] == ";":
                 return False
-            if tokens[j][0] == "id" and tokens[j][1] == "from" and j + 1 < len(tokens):
+            if (
+                brace_depth == 0
+                and tokens[j][0] == "id"
+                and tokens[j][1] == "from"
+                and (j == 0 or tokens[j - 1][1] != "as")
+                and j + 1 < len(tokens)
+            ):
                 return _format_match(tokens[j + 1], should_ignore_url)
     return False
 
@@ -518,7 +529,12 @@ def _extract_export_details(tokens, i, should_ignore_url):
         for j in range(i + 1, len(tokens)):
             if tokens[j][0] == "punct" and tokens[j][1] == ";":
                 return False
-            if tokens[j][0] == "id" and tokens[j][1] == "from" and j + 1 < len(tokens):
+            if (
+                tokens[j][0] == "id"
+                and tokens[j][1] == "from"
+                and (j == 0 or tokens[j - 1][1] != "as")
+                and j + 1 < len(tokens)
+            ):
                 return _format_match(tokens[j + 1], should_ignore_url)
 
     # export { name1, /* …, */ nameN } from "module-name";
