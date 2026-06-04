@@ -89,7 +89,7 @@ class TestHashedFiles:
 
     def test_path_ignored_completely(self):
         relpath = self.hashed_file_path("cached/css/ignored.css")
-        self.assertEqual(relpath, "cached/css/ignored.55e7c226dda1.css")
+        self.assertEqual(relpath, "cached/css/ignored.1dd606c55744.css")
         with storage.staticfiles_storage.open(relpath) as relfile:
             content = relfile.read()
             self.assertIn(b"#foobar", content)
@@ -99,6 +99,16 @@ class TestHashedFiles:
             self.assertIn(b"chrome:foobar", content)
             self.assertIn(b"//foobar", content)
             self.assertIn(b"url()", content)
+            # URLs inside string literals are ignored.
+            self.assertIn(b'content: "url(non_exist.png)";', content)
+            self.assertIn(b"content: 'url(non_exist.png)';", content)
+            # Tailwind-style \' escape sequences must not start a false string
+            # that shadows the real url() on the same line.
+            self.assertIn(
+                rb".tw\:bg-\[url\(\'non_exist.png\'\)\]"
+                rb" { background: url(../img/relative.acae32e4532b.png); }",
+                content,
+            )
         self.assertPostCondition()
 
     def test_path_with_querystring(self):
@@ -922,6 +932,9 @@ class JSModuleImportAggregationTestMixin:
             # Dynamic imports (single/double quotes — processed by both paths).
             b'const dynamicModule = import("./module_test.477bbebe77f0.js");',
             b"const dynamicModule = import('./module_test.477bbebe77f0.js');",
+            # Dynamic import with import attributes (second argument preserved).
+            b'const dynamicModule = import("./module_test.477bbebe77f0.js", '
+            b'{ with: { type: "json" } });',
             # Creating a module object.
             b'import * as NewModule from "./module_test.477bbebe77f0.js";',
             # Creating a minified module object.
@@ -937,6 +950,31 @@ class JSModuleImportAggregationTestMixin:
             b'} from "./module_test.477bbebe77f0.js";',
             # With attribute (import assertions).
             b'import k from"./other.d41d8cd98f00.css"with{type:"css"};',
+            # Mid-line import (after other code on the same line).
+            b"var placeholder; "
+            b'import { testConst as alias2 } from "./module_test.477bbebe77f0.js";',
+            # Multiple imports packed onto one minified line.
+            b'import{testConst as alias3}from"./module_test.477bbebe77f0.js";'
+            b'import relativeModule2 from"../nested/js/nested.866475c46bb4.js";',
+            # ASI: no trailing semicolon — structure preserved, only URL replaced.
+            b'import{testConst as alias4}from"./module_test.477bbebe77f0.js"',
+            # ASI: spaced form without trailing semicolon.
+            b'import * as mAsi from "./module_test.477bbebe77f0.js"\n',
+            b'import { testConst as aliasAsi } from "./module_test.477bbebe77f0.js"\n',
+            # Imports inside string literals are ignored.
+            b"""const msgStr = 'import { foo } from "./module_test_missing.js";';""",
+            b"""const helpStr = "import { bar } from './module_test_missing.js';";""",
+            b"""const tmplLit = `import { baz } from "./module_test_missing.js";`;""",
+            b"""const dynStr = 'const x = import("./module_test_missing.js");';""",
+            b"const multiLineLit = `\n"
+            b'import { baz } from "./module_test_missing.js";\n'
+            b"`;",
+            # Export without from must not consume a subsequent import's from clause.
+            b"export { testConst };",
+            b'import { firstConst } from "./module_test.477bbebe77f0.js";',
+            # Import in JSDoc block comment after a real import is left alone.
+            b"import '../nested/js/nested.866475c46bb4.js';",
+            b'import { something } from "./module_test_missing.js";',
             # Unprocessed: comments and string literals (ignored by both paths).
             b'// @returns {import("./non-existent-1").something}',
             b'/* @returns {import("./non-existent-2").something} */',
@@ -1011,12 +1049,12 @@ class TestCollectionJSModuleImportAggregationManifestStorage(
         relpath = self.hashed_file_path("cached/module.js")
         # Hash differs from the lexer path because the backtick import is not
         # processed, leaving the URL unhashed.
-        self.assertNotEqual(relpath, "cached/module.7a0f6282224e.js")
+        self.assertNotEqual(relpath, "cached/module.97c98e519035.js")
         super().test_module_import()
 
     def test_aggregating_modules(self):
         relpath = self.hashed_file_path("cached/module.js")
-        self.assertNotEqual(relpath, "cached/module.7a0f6282224e.js")
+        self.assertNotEqual(relpath, "cached/module.97c98e519035.js")
         super().test_aggregating_modules()
 
     def test_template_literal_not_processed(self):
@@ -1042,6 +1080,59 @@ class TestCollectionJSModuleImportAggregationManifestStorage(
             with storage.staticfiles_storage.open(relpath) as relfile:
                 content = relfile.read()
                 self.assertIn(b"./${module_name}", content)
+
+    def test_build_artifact_regex_path(self):
+        """
+        With the regex path, bare module specifiers (e.g. "react") are invisible
+        to the pattern matcher (patterns require a ./ or / prefix), so the
+        relative import is still rewritten normally.
+
+        Extensionless imports (e.g. "./Button") that can't be resolved emit a
+        BuildArtifactWarning and are left unchanged, but processing of the rest
+        of the file continues.
+        """
+        file_contents = {
+            "build_artifact.js": (
+                'import React from "react";\n'
+                'import Component from "./module_test.js";\n'
+                'import Button from "./Button";\n'
+                'import Base from "./something.base";\n'
+                "export default Component;\n"
+            ),
+            "module_test.js": "export {};\n",
+        }
+        for filename, content in file_contents.items():
+            with open(self._get_filename_path(filename), "w") as f:
+                f.write(content)
+
+        with self.modify_settings(STATICFILES_DIRS={"append": self._temp_dir}):
+            finders.get_finder.cache_clear()
+            out = StringIO()
+            call_command("collectstatic", interactive=False, verbosity=1, stdout=out)
+
+            # Non-JS imports trigger a BuildArtifactWarning (extensionless or
+            # non-.js/.mjs extension both warn; only a missing .js/.mjs errors).
+            self.assertIn("build artifact", out.getvalue())
+            self.assertIn("./Button", out.getvalue())
+            self.assertIn("./something.base", out.getvalue())
+
+            module_test_hashed = os.path.basename(
+                self.hashed_file_path("test/module_test.js")
+            )
+            relpath = self.hashed_file_path("test/build_artifact.js")
+            with storage.staticfiles_storage.open(relpath) as relfile:
+                content = relfile.read()
+
+            # Bare specifier unchanged (pattern never matched it).
+            self.assertIn(b'import React from "react";', content)
+            # Relative import with extension IS rewritten.
+            self.assertIn(
+                f'import Component from "./{module_test_hashed}";'.encode(),
+                content,
+            )
+            # Non-JS imports are left unchanged (warned, not errored).
+            self.assertIn(b'import Button from "./Button";', content)
+            self.assertIn(b'import Base from "./something.base";', content)
 
 
 @override_settings(
@@ -1073,17 +1164,16 @@ class TestCollectionJSModuleImportAggregationManifestStorageLexer(
 
     def test_module_import(self):
         relpath = self.hashed_file_path("cached/module.js")
-        self.assertEqual(relpath, "cached/module.7a0f6282224e.js")
+        self.assertEqual(relpath, "cached/module.5c82f2259163.js")
         super().test_module_import()
 
     def test_aggregating_modules(self):
         relpath = self.hashed_file_path("cached/module.js")
-        self.assertEqual(relpath, "cached/module.7a0f6282224e.js")
+        self.assertEqual(relpath, "cached/module.5c82f2259163.js")
         super().test_aggregating_modules()
 
     def test_template_literal_with_variables(self):
-        """Test that template literals with variables raise an appropriate error."""
-        # Create initial static files.
+        """Test that template literals with variables in the path are warned about."""
         file_contents = (
             ("dynamic_import.js", "import(`./${module_name}`);"),
             ("module.js", "this"),
@@ -1095,50 +1185,66 @@ class TestCollectionJSModuleImportAggregationManifestStorageLexer(
         with self.modify_settings(STATICFILES_DIRS={"append": self._temp_dir}):
             finders.get_finder.cache_clear()
             err = StringIO()
-            # Expect ValueError with message about template literals
-            error_message = "Found a template literal with a variable: ./${module_name}"
 
-            with self.assertRaisesMessage(CommandError, error_message):
-                call_command(
-                    "collectstatic", interactive=False, verbosity=0, stderr=err
-                )
+            # Template literals with variables in the path are now a warning,
+            # not a hard error — collectstatic completes successfully.
+            call_command("collectstatic", interactive=False, verbosity=0, stderr=err)
+            relpath = self.hashed_file_path("test/dynamic_import.js")
+            with storage.staticfiles_storage.open(relpath) as relfile:
+                content = relfile.read()
+                # The unresolvable import is left unchanged.
+                self.assertIn(b"./${module_name}", content)
 
-            if django.VERSION[:2] not in [(4, 2), (5, 0)]:
-                with override_settings(
-                    STORAGES={
-                        **settings.STORAGES,
-                        STATICFILES_STORAGE_ALIAS: {
-                            "BACKEND": (
-                                "django_manifeststaticfiles_enhanced.storage."
-                                "EnhancedManifestStaticFilesStorage"
-                            ),
-                            "OPTIONS": {
-                                "ignore_errors": [
-                                    "test/dynamic_import.js:./${module_name}"
-                                ],
-                            },
-                        },
-                    }
-                ):
-                    call_command(
-                        "collectstatic", interactive=False, verbosity=0, stderr=err
-                    )
-                    relpath = self.hashed_file_path("test/dynamic_import.js")
-                    with storage.staticfiles_storage.open(relpath) as relfile:
-                        content = relfile.read()
-                        self.assertIn(b"./${module_name}", content)
-
-            # Change the contents of the dynamic_import file.
-            # variables in the querystring are okay
+            # Variables in the query string only are fine — the base URL is replaced.
             with open(self._get_filename_path("dynamic_import.js"), "w+b") as f:
-                f.write(b"import(`module.js?t=${Date.now()}`);")
+                f.write(b"import(`./module.js?t=${Date.now()}`);")
 
-            # a second collectstatic.
             call_command("collectstatic", interactive=False, verbosity=0, stderr=err)
             relpath = self.hashed_file_path("test/dynamic_import.js")
             with storage.staticfiles_storage.open(relpath) as relfile:
                 content = relfile.read()
                 self.assertIn(b"module.9e925e9341b4.js", content)
+
+    def test_build_artifact_lexer_path(self):
+        """
+        With the lexer path, bare module specifiers (e.g. "react") are silently
+        skipped — no warning, consistent with the regex path which never matches
+        them. Relative imports in the same file are still rewritten.
+        """
+        file_contents = {
+            "build_artifact.js": (
+                'import React from "react";\n'
+                'import Component from "./module_test.js";\n'
+                "export default Component;\n"
+            ),
+            "module_test.js": "export {};\n",
+        }
+        for filename, content in file_contents.items():
+            with open(self._get_filename_path(filename), "w") as f:
+                f.write(content)
+
+        with self.modify_settings(STATICFILES_DIRS={"append": self._temp_dir}):
+            finders.get_finder.cache_clear()
+            out = StringIO()
+            call_command("collectstatic", interactive=False, verbosity=1, stdout=out)
+
+            # No warning for bare specifiers.
+            self.assertNotIn("react", out.getvalue())
+
+            module_test_hashed = os.path.basename(
+                self.hashed_file_path("test/module_test.js")
+            )
+            relpath = self.hashed_file_path("test/build_artifact.js")
+            with storage.staticfiles_storage.open(relpath) as relfile:
+                content = relfile.read()
+
+            # Bare specifier unchanged.
+            self.assertIn(b'import React from "react";', content)
+            # Relative import IS rewritten — only the bare specifier was skipped.
+            self.assertIn(
+                f'import Component from "./{module_test_hashed}";'.encode(),
+                content,
+            )
 
 
 class CustomExtractorStorage(EnhancedManifestStaticFilesStorage):
