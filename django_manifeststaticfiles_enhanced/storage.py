@@ -685,16 +685,21 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
         return url_positions
 
+    _STATMENT_BOUNDARY = r"(?:^|[;}]|\*/)"
+    _COMMENTS_AND_SPACE = r"(?:\s*(?://[^\n]*\n|/\*.*?\*/))*\s*"
+
     import_export_pattern = re.compile(
-        # check for import statements
-        r"((^|[;}]|\*/)\s*import\b|"
-        # check for dynamic imports
-        r"import\s\(|"
-        # check for edge case with comment in between import and opening bracket
-        r"import\s*/\*.*?\*/\s*\(|"
-        # check for the word export must be followed
-        r"\bexport[\s{/*])",
-        re.MULTILINE,
+        "|".join(
+            [
+                # static import at statement boundary
+                _STATMENT_BOUNDARY + r"\s*import\b",
+                # dynamic import(), optional comments before opening bracket
+                r"\bimport" + _COMMENTS_AND_SPACE + r"\(",
+                # export at statement boundary
+                _STATMENT_BOUNDARY + r"\s*export[\s{*/]",
+            ]
+        ),
+        re.MULTILINE | re.DOTALL,
     )
 
     def _process_css_urls(self, name, content):

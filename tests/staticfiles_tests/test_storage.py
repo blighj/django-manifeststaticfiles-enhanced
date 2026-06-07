@@ -1134,6 +1134,161 @@ class TestCollectionJSModuleImportAggregationManifestStorage(
             self.assertIn(b'import Button from "./Button";', content)
             self.assertIn(b'import Base from "./something.base";', content)
 
+    def test_lexer_only_patterns(self):
+        relpath = self.hashed_file_path("cached/lexer_only.js")
+        with storage.staticfiles_storage.open(relpath) as f:
+            content = f.read()
+        # Multiline import is NOT rewritten (pattern requires quote right after `(`).
+        self.assertIn(b'import(\n    "./module.js"\n)', content)
+        # Block comment inside dynamic import is NOT rewritten.
+        self.assertIn(b'import(/*comment*/"./module.js")', content)
+        # Block comment in side-effect import is NOT rewritten.
+        self.assertIn(b'import /*comment*/ "./module.js"', content)
+        # Block comment between from and URL is NOT rewritten.
+        self.assertIn(b'from /*comment*/ "./module.js"', content)
+        # Same-line string runon: import after /test"pattern/ is NOT rewritten.
+        self.assertIn(
+            b'const re1 = /test"pattern/; import("./module.js")',
+            content,
+        )
+        # Same-line line comment runon: import after /[a-z//]/ is NOT rewritten.
+        self.assertIn(
+            b'const re2 = /[a-z//]/; import("./module.js")',
+            content,
+        )
+        # Import after regex literal with backtick is NOT rewritten.
+        self.assertIn(
+            b"const re3 = /test`pattern/;\nimport(`./module.js`)",
+            content,
+        )
+
+
+class TestImportExportPattern(unittest.TestCase):
+    """Unit tests for the import_export_pattern pre-filter regex.
+
+    This pattern is a fast gate before the expensive lexer. False positives
+    (matching when there is no real import/export) are acceptable — they just
+    cause an unnecessary lexer run. False negatives (not matching when there
+    IS a real import/export) are bugs: the lexer never runs and URLs are not
+    rewritten.
+    """
+
+    pattern = EnhancedManifestStaticFilesStorage.import_export_pattern
+
+    def assertMatches(self, content):
+        self.assertIsNotNone(
+            self.pattern.search(content),
+            f"Expected pattern to match: {content!r}",
+        )
+
+    def assertNoMatch(self, content):
+        self.assertIsNone(
+            self.pattern.search(content),
+            f"Expected pattern NOT to match: {content!r}",
+        )
+
+    # --- static imports ---
+
+    def test_static_import_start_of_line(self):
+        self.assertMatches("import foo from './module.js'")
+
+    def test_static_import_indented(self):
+        self.assertMatches("    import foo from './module.js'")
+
+    def test_static_import_after_semicolon(self):
+        # minified: }import or ;import
+        self.assertMatches(";import foo from './module.js'")
+
+    def test_static_import_after_brace(self):
+        self.assertMatches("}import foo from './module.js'")
+
+    def test_static_import_after_block_comment(self):
+        # e.g. a licence banner ending with */
+        self.assertMatches("/* licence */\nimport foo from './module.js'")
+
+    # --- dynamic imports ---
+
+    def test_dynamic_import_basic(self):
+        self.assertMatches("import('./module.js')")
+
+    def test_dynamic_import_with_space(self):
+        self.assertMatches("import ('./module.js')")
+
+    def test_dynamic_import_mid_expression(self):
+        # not at a statement boundary — only branch 2 can catch this
+        self.assertMatches("const load = () => import('./module.js')")
+
+    def test_dynamic_import_line_comment(self):
+        self.assertMatches("import // comment\n('./module.js')")
+
+    def test_dynamic_import_block_comment(self):
+        self.assertMatches("import /* comment */ ('./module.js')")
+
+    def test_dynamic_import_multiline_block_comment(self):
+        self.assertMatches("import /* comment\n   spanning lines */ ('./module.js')")
+
+    def test_dynamic_import_multiple_line_comments(self):
+        self.assertMatches("import // first\n// second\n('./module.js')")
+
+    def test_dynamic_import_mixed_comments(self):
+        self.assertMatches("import // c1\n/* c2 */\n// c3\n    ('./module.js')")
+
+    def test_dynamic_import_mid_expression_with_line_comment(self):
+        # the key correctness case: not at a statement boundary, has a line
+        # comment — only the dynamic import branch catches this
+        self.assertMatches("const load = () => import // comment\n('./module.js')")
+
+    # --- exports ---
+
+    def test_export_default(self):
+        self.assertMatches("export default foo")
+
+    def test_export_named(self):
+        self.assertMatches("export { foo, bar }")
+
+    def test_export_star(self):
+        self.assertMatches("export * from './module.js'")
+
+    def test_export_star_minified(self):
+        # no space between export and * in minified output
+        self.assertMatches("export*from './module.js'")
+
+    def test_export_after_semicolon(self):
+        self.assertMatches(";export default foo")
+
+    def test_export_after_brace(self):
+        self.assertMatches("}export default foo")
+
+    # --- should NOT match ---
+
+    def test_no_match_important(self):
+        # 'import' embedded in a longer word
+        self.assertNoMatch("important rule")
+
+    def test_no_match_exports(self):
+        # CommonJS exports object — 's' is a word character, no boundary
+        self.assertNoMatch("exports.foo = 1")
+
+    def test_no_match_export_identifier(self):
+        self.assertNoMatch("exportSomething()")
+
+    def test_no_match_reimport(self):
+        # no word boundary before 'import'
+        self.assertNoMatch("reimport('./module.js')")
+
+    def test_no_match_import_in_line_comment(self):
+        # '//' is not a statement boundary, so the static branch misses it;
+        # 'import' is not followed by '(' so the dynamic branch misses it too
+        self.assertNoMatch("// import foo from './module.js'")
+
+    def test_no_match_export_in_line_comment(self):
+        # statement boundary check on export rules this out; the old
+        # \bexport[\s{/*] pattern would have matched this
+        self.assertNoMatch("// export default foo")
+
+    def test_no_match_export_in_block_comment(self):
+        self.assertNoMatch("/* export default foo */")
+
 
 @override_settings(
     STORAGES={
@@ -1245,6 +1400,34 @@ class TestCollectionJSModuleImportAggregationManifestStorageLexer(
                 f'import Component from "./{module_test_hashed}";'.encode(),
                 content,
             )
+
+    def test_lexer_only_patterns(self):
+        relpath = self.hashed_file_path("cached/lexer_only.js")
+        with storage.staticfiles_storage.open(relpath) as f:
+            content = f.read()
+        # Multiline import IS rewritten (lexer handles whitespace between `(` and URL).
+        self.assertIn(b'import(\n    "./module.5c82f2259163.js"\n)', content)
+        # Block comment inside dynamic import IS rewritten.
+        self.assertIn(b'import(/*comment*/"./module.5c82f2259163.js")', content)
+        # Block comment in side-effect import IS rewritten.
+        self.assertIn(b'import /*comment*/ "./module.5c82f2259163.js"', content)
+        # Block comment between from and URL IS rewritten.
+        self.assertIn(b'from /*comment*/ "./module.5c82f2259163.js"', content)
+        # Same-line string runon: import after /test"pattern/ IS rewritten.
+        self.assertIn(
+            b'const re1 = /test"pattern/; import("./module.5c82f2259163.js")',
+            content,
+        )
+        # Same-line line comment runon: import after /[a-z//]/ IS rewritten.
+        self.assertIn(
+            b'const re2 = /[a-z//]/; import("./module.5c82f2259163.js")',
+            content,
+        )
+        # Import after regex literal IS rewritten (lexer handles regex literals).
+        self.assertIn(
+            b"const re3 = /test`pattern/;\nimport(`./module.5c82f2259163.js`)",
+            content,
+        )
 
 
 class CustomExtractorStorage(EnhancedManifestStaticFilesStorage):
