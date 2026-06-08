@@ -8,13 +8,19 @@ Django tickets: 27929, 21080, 26583, 28200, 34322, 23517
 __version__ = "0.9.1"
 
 from .storage import (
+    BuildArtifactWarning,
+    DynamicImportWarning,
     EnhancedManifestStaticFilesStorage,
+    ManifestStaticFilesWarning,
     SourcemapWarning,
     TestingManifestStaticFilesStorage,
 )
 
 __all__ = [
+    "BuildArtifactWarning",
+    "DynamicImportWarning",
     "EnhancedManifestStaticFilesStorage",
+    "ManifestStaticFilesWarning",
     "SourcemapWarning",
     "TestingManifestStaticFilesStorage",
 ]

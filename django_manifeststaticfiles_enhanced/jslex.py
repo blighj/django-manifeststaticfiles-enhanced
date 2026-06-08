@@ -452,22 +452,27 @@ def find_import_export_strings(file_contents, should_ignore_url=None):
         if token_tuple[0] not in ["ws", "comment", "linecomment"]
     ]
     matches = []
+    warnings = []
 
     for i, (name, value, _) in enumerate(tokens):
         if name == "keyword" and value == "import":
-            import_details = _extract_import_details(tokens, i, should_ignore_url)
+            import_details = _extract_import_details(
+                tokens, i, should_ignore_url, warnings
+            )
             if import_details:
                 matches.append(import_details)
 
         elif name == "keyword" and value == "export":
-            export_details = _extract_export_details(tokens, i, should_ignore_url)
+            export_details = _extract_export_details(
+                tokens, i, should_ignore_url, warnings
+            )
             if export_details:
                 matches.append(export_details)
 
-    return matches
+    return matches, warnings
 
 
-def _extract_import_details(tokens, i, should_ignore_url):
+def _extract_import_details(tokens, i, should_ignore_url, warnings):
     # Check if this is actually a method name
     # (part of an object access) by looking at the previous token
     # if it's a . then this is a method name, not an import statement
@@ -482,12 +487,12 @@ def _extract_import_details(tokens, i, should_ignore_url):
     # check for plain import and function imports first
     # import "module-name";
     if i + 1 < len(tokens) and tokens[i + 1][0] == "string":
-        return _format_match(tokens[i + 1], should_ignore_url)
+        return _format_match(tokens[i + 1], should_ignore_url, warnings)
     # import("module-name");
     elif (
         i + 2 < len(tokens) and tokens[i + 1][0] == "punct" and tokens[i + 1][1] == "("
     ):
-        return _format_match(tokens[i + 2], should_ignore_url)
+        return _format_match(tokens[i + 2], should_ignore_url, warnings)
     # or we keep going till we see from
     # import { export1 } from "module-name";
     # import { export1 as alias1 } from "module-name";
@@ -513,11 +518,11 @@ def _extract_import_details(tokens, i, should_ignore_url):
                 and (j == 0 or tokens[j - 1][1] != "as")
                 and j + 1 < len(tokens)
             ):
-                return _format_match(tokens[j + 1], should_ignore_url)
+                return _format_match(tokens[j + 1], should_ignore_url, warnings)
     return False
 
 
-def _extract_export_details(tokens, i, should_ignore_url):
+def _extract_export_details(tokens, i, should_ignore_url, warnings):
     # export is used within modules as well as aggregation
     # we need to distinguish between them by looking for the from keyword
     # also from is an id not a reserved keyword
@@ -535,7 +540,7 @@ def _extract_export_details(tokens, i, should_ignore_url):
                 and (j == 0 or tokens[j - 1][1] != "as")
                 and j + 1 < len(tokens)
             ):
-                return _format_match(tokens[j + 1], should_ignore_url)
+                return _format_match(tokens[j + 1], should_ignore_url, warnings)
 
     # export { name1, /* …, */ nameN } from "module-name";
     # export { import1 as name1, /* …, */ nameN } from "module-name";
@@ -548,25 +553,25 @@ def _extract_export_details(tokens, i, should_ignore_url):
                 return False
             if tokens[j][0] == "punct" and tokens[j][1] == "}" and j + 2 < len(tokens):
                 if tokens[j + 1][0] == "id" and tokens[j + 1][1] == "from":
-                    return _format_match(tokens[j + 2], should_ignore_url)
+                    return _format_match(tokens[j + 2], should_ignore_url, warnings)
                 else:
                     return False
     return False
 
 
-def _format_match(token_tuple, should_ignore_url):
+def _format_match(token_tuple, should_ignore_url, warnings):
     # we can't support template strings with variables
     if token_tuple[1].startswith("`") and "${" in token_tuple[1]:
         url = token_tuple[1][1:-1].split("?")[0]
         if "${" in url:
             if should_ignore_url(url):
-                return
-            message = (
+                return None
+            warnings.append(
                 f"Found a template literal with a variable: {url} "
                 "Dynamic imports with template literals containing variables "
                 "are not supported as the actual import path cannot be "
                 "determined at build time."
             )
-            raise ValueError(message)
+            return None
     # the lex parser returns the string, with the wrapping quotes, remove them
     return (token_tuple[1][1:-1], token_tuple[2] + 1)

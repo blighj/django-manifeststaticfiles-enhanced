@@ -27,16 +27,16 @@ from django_manifeststaticfiles_enhanced.jslex import (
 _css_ignored_re = _lazy_re_compile(
     r"/\*.*?\*/"  # block comment
     r"|\\."  # escape sequence
-    r"|'(?:[^'\\]|\\.)*'"  # single-quoted string
-    r'|"(?:[^"\\]|\\.)*"',  # double-quoted string
+    r"|'(?:[^'\\\n]|\\.)*'"  # single-quoted string
+    r'|"(?:[^"\\\n]|\\.)*"',  # double-quoted string
     re.DOTALL,
 )
 _js_ignored_re = _lazy_re_compile(
     r"/\*.*?\*/"  # block comment
     r"|//[^\n]*"  # line comment
     r"|\\."  # escape sequence
-    r"|'(?:[^'\\]|\\.)*'"  # single-quoted string
-    r'|"(?:[^"\\]|\\.)*"'  # double-quoted string
+    r"|'(?:[^'\\\n]|\\.)*'"  # single-quoted string
+    r'|"(?:[^"\\\n]|\\.)*"'  # double-quoted string
     r"|`(?:[^`\\]|\\.)*`",  # template literal
     re.DOTALL,
 )
@@ -201,7 +201,19 @@ class StaticFileProcessingError(ValueError):
         self.file_name = file_name
 
 
-class SourcemapWarning(UserWarning):
+class ManifestStaticFilesWarning(UserWarning):
+    pass
+
+
+class SourcemapWarning(ManifestStaticFilesWarning):
+    pass
+
+
+class BuildArtifactWarning(ManifestStaticFilesWarning):
+    pass
+
+
+class DynamicImportWarning(ManifestStaticFilesWarning):
     pass
 
 
@@ -209,6 +221,24 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
     use_lexer = False
     sourcemap_strict = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Django's HashedFilesMixin.__init__ builds self._patterns as 2-tuples.
+        # Rebuild as 3-tuples (compiled, template, ignored_re) so each pattern
+        # carries its own ignore regex and call sites don't branch on file extension.
+        # JS patterns get _js_ignored_re; everything else gets _css_ignored_re.
+        self._patterns = {
+            extension: [
+                (
+                    compiled,
+                    template,
+                    _js_ignored_re if extension == "*.js" else _css_ignored_re,
+                )
+                for compiled, template in compiled_patterns
+            ]
+            for extension, compiled_patterns in self._patterns.items()
+        }
 
     # Override Django's base patterns to fix greedy .* in source map patterns.
     # The greedy .* captures trailing whitespace (tabs, spaces) into the url
@@ -253,56 +283,66 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         (
             (
                 (
-                    r"""(?m)^\s*(?P<matched>(?-i:import)"""
-                    r"""(?P<import>[\s\{][^;]*?|\*\s*as\s*\w+)"""
-                    r"""\s*from\s*['"](?P<url>[./].*?)["']\s*;)"""
-                ),
-                """import%(import)s from "%(url)s";""",
-            ),
-            (
-                (
-                    r"""(?m)^\s*(?P<matched>(?-i:import)"""
+                    r"""(?:(?m:^)[ \t]*|(?<=[;{})])[ \t]*)"""
+                    r"""(?P<matched>(?-i:import)"""
                     r"""(?P<import>[\s\{][^;]*?|\*\s*as\s*\w+)"""
                     r"""\s*from\s*['"](?P<url>[./].*?)["']"""
-                    r"""\s*(?P<attributes>with\s*\{[^}]*\})\s*;)"""
+                    r"""(?P<attributes>(?:[ \t]*with\s*\{[^}]*\})?)"""
+                    r"""[ \t]*(?P<semi>;?))"""
                 ),
-                """import%(import)s from "%(url)s" %(attributes)s;""",
+                """import%(import)s from "%(url)s"%(attributes)s%(semi)s""",
             ),
             (
                 (
-                    r"""(?m)^\s*(?P<matched>(?-i:export)(?P<exports>[\s\{][^;]*?)"""
-                    r"""\s*from\s*["'](?P<url>[./].*?)["']\s*;)"""
-                ),
-                """export%(exports)s from "%(url)s";""",
-            ),
-            (
-                (
-                    r"""(?m)^\s*(?P<matched>(?-i:export)(?P<exports>[\s\{][^;]*?)"""
+                    r"""(?:(?m:^)[ \t]*|(?<=[;{})])[ \t]*)"""
+                    r"""(?P<matched>(?-i:export)(?P<exports>[\s\{][^;]*?)"""
                     r"""\s*from\s*["'](?P<url>[./].*?)["']"""
-                    r"""\s*(?P<attributes>with\s*\{[^}]*\})\s*;)"""
+                    r"""(?P<attributes>(?:[ \t]*with\s*\{[^}]*\})?)"""
+                    r"""[ \t]*(?P<semi>;?))"""
                 ),
-                """export%(exports)s from "%(url)s" %(attributes)s;""",
+                """export%(exports)s from "%(url)s"%(attributes)s%(semi)s""",
             ),
             (
-                r"""(?m)^\s*(?P<matched>import\s*['"](?P<url>[./].*?)["']\s*;)""",
-                """import"%(url)s";""",
+                (
+                    r"""(?:(?m:^)[ \t]*|(?<=[;{})])[ \t]*)"""
+                    r"""(?P<matched>(?-i:import)\s*['"]"""
+                    r"""(?P<url>[./].*?)["'][ \t]*(?P<semi>;?))"""
+                ),
+                """import"%(url)s"%(semi)s""",
             ),
             (
-                r"""(?P<matched>import\(["'](?P<url>.*?)["']\))""",
-                """import("%(url)s")""",
+                r"""(?P<matched>import\(["']"""
+                r"""(?P<url>[./][^"']*?)["'](?P<options>[^)]*)\))""",
+                """import("%(url)s"%(options)s)""",
             ),
         ),
     )
 
-    def get_ignored_blocks(self, content, for_js=False):
+    def get_ignored_blocks(self, content, ignored_re):
         """
         Return a sorted list of (start, end) tuples for content that should
-        be ignored during URL rewriting: block comments and string literals
-        for CSS, plus line comments (// ...) and template literals (`...`)
-        for JS.
+        be ignored during URL rewriting based on the specified pattern:
+        e.g. block comments and string literals for CSS, plus line comments
+        (// ...) and template literals (`...`) for JS.
         """
-        pattern = _js_ignored_re if for_js else _css_ignored_re
-        return [(m.start(), m.end()) for m in re.finditer(pattern, content)]
+        blocks = []
+        for m in re.finditer(ignored_re, content):
+            if self._is_midline_comment_on_long_line(content, m.start()):
+                continue
+            blocks.append((m.start(), m.end()))
+        return blocks
+
+    def _is_midline_comment_on_long_line(self, content, pos, threshold=500):
+        # Long lines are likely minified; mid-line // is probably a regex misparse.
+        if content[pos : pos + 2] != "//":
+            return False
+        line_start = content.rfind("\n", 0, pos) + 1
+        if not content[line_start:pos].strip():
+            return False
+        line_end = content.find("\n", pos)
+        if line_end == -1:
+            line_end = len(content)
+        return line_end - line_start > threshold
 
     def is_in_ignored_block(self, pos, ignored_blocks):
         for start, end in ignored_blocks:
@@ -331,12 +371,12 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         If either of these are performed on a file, then that file is
         considered post-processed.
         """
-        self._sourcemap_warnings = []
+        self._post_process_warnings = []
         try:
             # if we're in dry run, still find urls and raise any exceptions
             if dry_run:
                 self._test_url_substitutions(paths)
-                for warn_name, warning in self._sourcemap_warnings:
+                for warn_name, warning in self._post_process_warnings:
                     yield warn_name, warn_name, warning
                 return
 
@@ -356,7 +396,10 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             storage, path = paths[name]
             with storage.open(path) as f:
                 content = f.read().decode("utf-8")
+            file_is_js = os.path.splitext(name)[1] == ".js"
             for url, position, is_sourcemap in url_positions:
+                url_ext = os.path.splitext(urlsplit(urldefrag(url)[0]).path)[1]
+                url_is_js = url_ext in (".js", ".mjs")
                 try:
                     self._adjust_url(url, name, paths)
                 except ValueError as exc:
@@ -364,13 +407,25 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                         pass
                     elif is_sourcemap and not self.sourcemap_strict:
                         line = _line_at_position(content, position)
-                        self._sourcemap_warnings.append(
+                        self._post_process_warnings.append(
                             (
                                 name,
                                 SourcemapWarning(
                                     f"{name!r}: sourcemap reference {url!r} "
-                                    "on line {line} "
+                                    f"on line {line} "
                                     "could not be resolved"
+                                ),
+                            )
+                        )
+                    elif file_is_js and not url_is_js:
+                        line = _line_at_position(content, position)
+                        self._post_process_warnings.append(
+                            (
+                                name,
+                                BuildArtifactWarning(
+                                    f"{name!r}: import {url!r} on line{line} "
+                                    "could not be resolved — this may be a "
+                                    "build artifact"
                                 ),
                             )
                         )
@@ -443,9 +498,9 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             )
             hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
             yield name, hashed_name, processed
-            for warn_name, warning in self._sourcemap_warnings:
+            for warn_name, warning in self._post_process_warnings:
                 yield warn_name, warn_name, warning
-            self._sourcemap_warnings.clear()
+            self._post_process_warnings.clear()
 
         # Phase 3: Handle circular dependencies
         if circular_deps:
@@ -455,9 +510,9 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             for name, hashed_name in circular_hashes:
                 hashed_files[self.hash_key(self.clean_name(name))] = hashed_name
                 yield name, hashed_name, True
-            for warn_name, warning in self._sourcemap_warnings:
+            for warn_name, warning in self._post_process_warnings:
                 yield warn_name, warn_name, warning
-            self._sourcemap_warnings.clear()
+            self._post_process_warnings.clear()
 
         # Store the processed paths
         self.hashed_files.update(hashed_files)
@@ -590,24 +645,36 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             if not self.import_export_pattern.search(content):
                 return url_positions
 
-            try:
-                urls = find_import_export_strings(
-                    content,
-                    should_ignore_url=lambda url: self._should_ignore_url(name, url),
+            urls, lex_warnings = find_import_export_strings(
+                content,
+                should_ignore_url=lambda url: self._should_ignore_url(name, url),
+            )
+            for msg in lex_warnings:
+                self._post_process_warnings.append(
+                    (
+                        name,
+                        DynamicImportWarning(f"'{name}': {msg}"),
+                    )
                 )
-            except ValueError as e:
-                message = e.args[0] if len(e.args) else ""
-                message = f"The js file '{name}' could not be processed.\n{message}"
-                raise StaticFileProcessingError(name) from ValueError(message)
             for url_name, position in urls:
+                if not url_name:
+                    continue
+                if (
+                    not url_name.startswith((".", "/"))
+                    and not re.match(r"^[a-z]+:", url_name)
+                    and not url_name.startswith("//")
+                ):
+                    # Bare module specifier (e.g. "react", "jquery") — the regex
+                    # path never matches these either, so silently skip them.
+                    continue
                 if self._should_adjust_url(url_name):
                     url_positions.append((url_name, position, False))
         else:
-            ignored_blocks = self.get_ignored_blocks(content, for_js=True)
             patterns = self._patterns.get("*.js", [])
-            if not any(p.search(content) for p, _ in patterns):
+            if not any(p.search(content) for p, *_ in patterns):
                 return url_positions
-            for pattern, _ in patterns:
+            for pattern, _, ignored_re in patterns:
+                ignored_blocks = self.get_ignored_blocks(content, ignored_re)
                 is_sourcemap = "sourceMappingURL" in pattern.pattern
                 for match in pattern.finditer(content):
                     if self.is_in_ignored_block(match.start(), ignored_blocks):
@@ -618,16 +685,21 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
         return url_positions
 
+    _STATMENT_BOUNDARY = r"(?:^|[;}]|\*/)"
+    _COMMENTS_AND_SPACE = r"(?:\s*(?://[^\n]*\n|/\*.*?\*/))*\s*"
+
     import_export_pattern = re.compile(
-        # check for import statements
-        r"((^|[;}]|\*/)\s*import\b|"
-        # check for dynamic imports
-        r"import\s\(|"
-        # check for edge case with comment in between import and opening bracket
-        r"import\s*/\*.*?\*/\s*\(|"
-        # check for the word export must be followed
-        r"\bexport[\s{/*])",
-        re.MULTILINE,
+        "|".join(
+            [
+                # static import at statement boundary
+                _STATMENT_BOUNDARY + r"\s*import\b",
+                # dynamic import(), optional comments before opening bracket
+                r"\bimport" + _COMMENTS_AND_SPACE + r"\(",
+                # export at statement boundary
+                _STATMENT_BOUNDARY + r"\s*export[\s{*/]",
+            ]
+        ),
+        re.MULTILINE | re.DOTALL,
     )
 
     def _process_css_urls(self, name, content):
@@ -648,11 +720,11 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 if self._should_adjust_url(url_name):
                     url_positions.append((url_name, position, False))
         else:
-            ignored_blocks = self.get_ignored_blocks(content)
             patterns = self._patterns.get("*.css", [])
-            if not any(p.search(content) for p, _ in patterns):
+            if not any(p.search(content) for p, *_ in patterns):
                 return url_positions
-            for pattern, _ in patterns:
+            for pattern, _, ignored_re in patterns:
+                ignored_blocks = self.get_ignored_blocks(content, ignored_re)
                 is_sourcemap = "sourceMappingURL" in pattern.pattern
                 for match in pattern.finditer(content):
                     if self.is_in_ignored_block(match.start(), ignored_blocks):
@@ -834,10 +906,15 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             key=lambda x: x[1],
         )
 
+        file_is_js = os.path.splitext(name)[1] == ".js"
+
         for url, pos, is_sourcemap in sorted_positions:
             position = pos
             # Add content before this URL
             result_parts.append(content[last_position:position])
+
+            url_ext = os.path.splitext(urlsplit(urldefrag(url)[0]).path)[1]
+            url_is_js = url_ext in (".js", ".mjs")
 
             try:
                 transformed_url = self._adjust_url(url, name, hashed_files)
@@ -846,12 +923,24 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                     transformed_url = url
                 elif is_sourcemap and not self.sourcemap_strict:
                     line = _line_at_position(content, position)
-                    self._sourcemap_warnings.append(
+                    self._post_process_warnings.append(
                         (
                             name,
                             SourcemapWarning(
                                 f"{name!r}: sourcemap reference {url!r} on line {line} "
                                 "could not be resolved, leaving as-is"
+                            ),
+                        )
+                    )
+                    transformed_url = url
+                elif file_is_js and not url_is_js:
+                    line = _line_at_position(content, position)
+                    self._post_process_warnings.append(
+                        (
+                            name,
+                            BuildArtifactWarning(
+                                f"{name!r}: import {url!r} on line{line} "
+                                "could not be resolved — this may be a build artifact"
                             ),
                         )
                     )

@@ -15,7 +15,7 @@ from django.contrib.staticfiles.management.commands.collectstatic import (
 )
 from django.core.management.base import CommandError
 
-from django_manifeststaticfiles_enhanced.storage import SourcemapWarning
+from django_manifeststaticfiles_enhanced.storage import ManifestStaticFilesWarning
 
 # Global lock for directory creation in link operations
 _link_makedirs_lock = threading.Lock()
@@ -141,7 +141,7 @@ class Command(DjangoCollectstaticCommand):
         if self.post_process and hasattr(self.storage, "post_process"):
             processor = self.storage.post_process(found_files, dry_run=self.dry_run)
             for original_path, processed_path, processed in processor:
-                if isinstance(processed, SourcemapWarning):
+                if isinstance(processed, ManifestStaticFilesWarning):
                     self.log(str(processed), level=1)
                 elif isinstance(processed, Exception):
                     self.stderr.write("Post-processing '%s' failed!" % original_path)
