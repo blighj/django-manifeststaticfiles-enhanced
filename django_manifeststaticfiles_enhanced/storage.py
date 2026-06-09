@@ -275,6 +275,9 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         ),
     )
 
+    _JS_MODULE_STATEMENT_GUARD = r"(?:(?m:^)|(?<=[;})])|(?<=\*/))"
+    _JS_DYNAMIC_IMPORT_GUARD = r"(?<![.\w])"
+
     # Override to fix cross-statement boundary matching caused by (?s:.*?) in
     # Django's upstream patterns. Use [^;]*? to prevent an import/export from
     # consuming tokens that belong to the next statement.
@@ -283,35 +286,33 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         (
             (
                 (
-                    r"""(?:(?m:^)[ \t]*|(?<=[;{})])[ \t]*)"""
+                    _JS_MODULE_STATEMENT_GUARD + r"[ \t]*"
                     r"""(?P<matched>(?-i:import)"""
                     r"""(?P<import>[\s\{][^;]*?|\*\s*as\s*\w+)"""
                     r"""\s*from\s*['"](?P<url>[./].*?)["']"""
-                    r"""(?P<attributes>(?:[ \t]*with\s*\{[^}]*\})?)"""
-                    r"""[ \t]*(?P<semi>;?))"""
+                    r"""(?P<attributes>(?:[ \t]*with\s*\{[^}]*\})?))"""
                 ),
-                """import%(import)s from "%(url)s"%(attributes)s%(semi)s""",
+                """import%(import)s from "%(url)s"%(attributes)s""",
             ),
             (
                 (
-                    r"""(?:(?m:^)[ \t]*|(?<=[;{})])[ \t]*)"""
+                    _JS_MODULE_STATEMENT_GUARD + r"[ \t]*"
                     r"""(?P<matched>(?-i:export)(?P<exports>[\s\{][^;]*?)"""
                     r"""\s*from\s*["'](?P<url>[./].*?)["']"""
-                    r"""(?P<attributes>(?:[ \t]*with\s*\{[^}]*\})?)"""
-                    r"""[ \t]*(?P<semi>;?))"""
+                    r"""(?P<attributes>(?:[ \t]*with\s*\{[^}]*\})?))"""
                 ),
-                """export%(exports)s from "%(url)s"%(attributes)s%(semi)s""",
+                """export%(exports)s from "%(url)s"%(attributes)s""",
             ),
             (
                 (
-                    r"""(?:(?m:^)[ \t]*|(?<=[;{})])[ \t]*)"""
+                    _JS_MODULE_STATEMENT_GUARD + r"[ \t]*"
                     r"""(?P<matched>(?-i:import)\s*['"]"""
-                    r"""(?P<url>[./].*?)["'][ \t]*(?P<semi>;?))"""
+                    r"""(?P<url>[./].*?)["'])"""
                 ),
-                """import"%(url)s"%(semi)s""",
+                """import"%(url)s\"""",
             ),
             (
-                r"""(?P<matched>import\(["']"""
+                _JS_DYNAMIC_IMPORT_GUARD + r"""(?P<matched>import\(["']"""
                 r"""(?P<url>[./][^"']*?)["'](?P<options>[^)]*)\))""",
                 """import("%(url)s"%(options)s)""",
             ),
@@ -685,21 +686,20 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
         return url_positions
 
-    _STATMENT_BOUNDARY = r"(?:^|[;}]|\*/)"
     _COMMENTS_AND_SPACE = r"(?:\s*(?://[^\n]*\n|/\*.*?\*/))*\s*"
 
     import_export_pattern = re.compile(
         "|".join(
             [
                 # static import at statement boundary
-                _STATMENT_BOUNDARY + r"\s*import\b",
+                _JS_MODULE_STATEMENT_GUARD + r"\s*import\b",
                 # dynamic import(), optional comments before opening bracket
-                r"\bimport" + _COMMENTS_AND_SPACE + r"\(",
+                _JS_DYNAMIC_IMPORT_GUARD + r"import" + _COMMENTS_AND_SPACE + r"\(",
                 # export at statement boundary
-                _STATMENT_BOUNDARY + r"\s*export[\s{*/]",
+                _JS_MODULE_STATEMENT_GUARD + r"\s*export[\s{*/]",
             ]
         ),
-        re.MULTILINE | re.DOTALL,
+        re.DOTALL,
     )
 
     def _process_css_urls(self, name, content):
