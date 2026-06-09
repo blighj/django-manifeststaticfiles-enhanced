@@ -3,3 +3,10 @@ django_manifeststaticfiles_enhanced.egg-info/
 MANIFEST.in
 *~
 *.pyc
+
+# Benchmarks
+benchmarks/outputs/
+benchmarks/files_cache/
+benchmarks/venvs/
+benchmarks/node_modules/
+benchmarks/.lib_popularity_cache.json
