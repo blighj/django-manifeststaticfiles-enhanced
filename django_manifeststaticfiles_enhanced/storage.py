@@ -121,6 +121,8 @@ class ThreadSafeStorageMixin:
                             | os.O_EXCL
                             | getattr(os, "O_BINARY", 0)
                         )
+                        if self._allow_overwrite:
+                            open_flags = open_flags & ~os.O_EXCL | os.O_TRUNC
                     fd = os.open(full_path, open_flags, 0o666)
                     _file = None
                     try:
@@ -221,6 +223,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
     use_lexer = False
     sourcemap_strict = False
+    ignore_errors = []
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -393,16 +396,17 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         Process the paths for url substitutions and find exceptions
         """
         substitutions_dict = self._find_substitutions(paths)
+        presence_map = {self.hash_key(self.clean_name(n)): n for n in paths}
         for name, url_positions in substitutions_dict.items():
             storage, path = paths[name]
             with storage.open(path) as f:
                 content = f.read().decode("utf-8")
             file_is_js = os.path.splitext(name)[1] == ".js"
-            for url, position, is_sourcemap in url_positions:
+            for url, position, is_sourcemap, *_ in url_positions:
                 url_ext = os.path.splitext(urlsplit(urldefrag(url)[0]).path)[1]
                 url_is_js = url_ext in (".js", ".mjs")
                 try:
-                    self._adjust_url(url, name, paths)
+                    self._adjust_url(url, name, presence_map)
                 except ValueError as exc:
                     if self._should_ignore_url(name, url):
                         pass
@@ -565,11 +569,18 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 url_positions = []
                 for finder in finders:
                     url_positions.extend(finder(name, content))
-                # Normalize to 3-tuples for backward compat with custom finders
-                # that return (url, position) 2-tuples without is_sourcemap.
-                substitutions_dict[name] = [
-                    item if len(item) == 3 else (*item, False) for item in url_positions
-                ]
+
+                # Normalize to 4-tuples: (url, position, is_sourcemap, raw_len).
+                def _normalize(item):
+                    if len(item) == 4:
+                        return item
+                    if len(item) == 3:
+                        url, pos, is_sourcemap = item
+                        return (url, pos, is_sourcemap, len(url))
+                    url, pos = item
+                    return (url, pos, False, len(url))
+
+                substitutions_dict[name] = [_normalize(item) for item in url_positions]
         return substitutions_dict
 
     def _topological_sort(self, paths, substitutions_dict):
@@ -639,7 +650,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             if not complex_adjustments:
                 return url_positions
 
-            # The simple search still leave lots of falst positives,
+            # The simple search still leave lots of false positives,
             # like the words important or exports
             # Match for import export syntax to futher reduce the need
             # to run the lexer, should cut out 90% of false positives
@@ -716,9 +727,9 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             if not complex_adjustments:
                 return url_positions
 
-            for url_name, position in extract_css_urls(content):
+            for url_name, position, raw_len in extract_css_urls(content):
                 if self._should_adjust_url(url_name):
-                    url_positions.append((url_name, position, False))
+                    url_positions.append((url_name, position, False, raw_len))
         else:
             patterns = self._patterns.get("*.css", [])
             if not any(p.search(content) for p, *_ in patterns):
@@ -842,7 +853,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
     def _process_file(self, name, storage_and_path, hashed_files, url_positions):
         """
-        Adjust contents of fils and save hashed file copy
+        Adjust contents of files and save hashed file copy
         """
         storage, path = storage_and_path
 
@@ -908,7 +919,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
         file_is_js = os.path.splitext(name)[1] == ".js"
 
-        for url, pos, is_sourcemap in sorted_positions:
+        for url, pos, is_sourcemap, raw_len in sorted_positions:
             position = pos
             # Add content before this URL
             result_parts.append(content[last_position:position])
@@ -955,7 +966,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                     raise StaticFileProcessingError(name) from exc
 
             result_parts.append(transformed_url)
-            last_position = position + len(url)
+            last_position = position + raw_len
 
         # Add remaining content
         result_parts.append(content[last_position:])
@@ -974,7 +985,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         3. Safely updating all the references within the files
 
         Args:
-            circular_deps: Dict mapping files to their circular dependencies
+            circular_deps: Set mapping files to their circular dependencies
             paths: Dict mapping file paths to (storage, path) tuples
             substitutions_dict: Dictionary of url positions
             hashed_files: Dict of already processed files
@@ -1039,10 +1050,10 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
 
                 # Filter URL positions to only non-circular dependencies
                 non_circular_positions = []
-                for url, pos, is_sourcemap in substitutions_dict.get(name, []):
+                for url, pos, is_sourcemap, raw_len in substitutions_dict.get(name, []):
                     target = self._get_target_name(url, name)
                     if target not in circular_deps:
-                        non_circular_positions.append((url, pos, is_sourcemap))
+                        non_circular_positions.append((url, pos, is_sourcemap, raw_len))
                 # Replace all non-circular URLs first
                 if non_circular_positions:
                     content = self._process_file_content(
@@ -1169,8 +1180,6 @@ class EnhancedManifestStaticFilesStorage(
             if not isinstance(ignore_errors, list):
                 raise ImproperlyConfigured("ignore_errors must be a list")
             self.ignore_errors = ignore_errors
-        else:
-            self.ignore_errors = []
         if use_lexer is not None:
             self.use_lexer = use_lexer
         if sourcemap_strict is not None:

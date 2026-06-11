@@ -1,0 +1,9 @@
+/* CSS comment at start of unquoted url(). */
+.comment-before {
+    background: url(/*comment*/img/relative.png) center/cover no-repeat;
+}
+
+/* CSS comment mid way through unquoted url(). */
+.comment-mid {
+  background: url(img/relative/*comment*/.png) center/cover no-repeat;
+}

@@ -253,15 +253,13 @@ class CssLexer(Lexer):
         r"""
             (?i:url)\(                 # url(
             \s*                        # optional whitespace
-            (?:                        # start URL content group
-                (?:                    # either:
-                    "[^"]*"            # double-quoted string
-                    |                  # or
-                    '[^']*'            # single-quoted string
-                    |                  # or
-                    [^)]*              # unquoted chars
-                )+                     # one or more of the above
-            )                          # end URL content group
+            (?:                        # URL content
+                "[^"]*"                # double-quoted string
+                |                      # or
+                '[^']*'                # single-quoted string
+                |                      # or
+                [^)"']*                # unquoted chars (not ), ", or ')
+            )*                         # zero or more
             \s*                        # optional whitespace
             \)                         # closing )
         """,
@@ -408,7 +406,7 @@ def extract_css_urls(css_content):
                 # This string is an @import URL
                 clean_url = token_text[1:-1]  # Remove quotes
                 url_start_pos = position + 1  # Position after opening quote
-                urls.append((clean_url, url_start_pos))
+                urls.append((clean_url, url_start_pos, len(clean_url)))
     return urls
 
 
@@ -435,11 +433,13 @@ def _extract_url_details(token_text, position, css_content):
         # URL is quoted - keep it as-is (comments are literal)
         clean_url = url_content[1:-1]
         url_start_pos += 1  # Skip the opening quote
+        raw_len = len(clean_url)
     else:
         # URL is unquoted - remove CSS comments
         clean_url = re.sub(r"/\*.*?\*/", "", url_content).strip()
-        # For unquoted URLs, position stays the same (no quote to skip)
-    return (clean_url, url_start_pos)
+        # raw_len covers the original content including any stripped comments
+        raw_len = len(url_content)
+    return (clean_url, url_start_pos, raw_len)
 
 
 def find_import_export_strings(file_contents, should_ignore_url=None):
@@ -490,7 +490,10 @@ def _extract_import_details(tokens, i, should_ignore_url, warnings):
         return _format_match(tokens[i + 1], should_ignore_url, warnings)
     # import("module-name");
     elif (
-        i + 2 < len(tokens) and tokens[i + 1][0] == "punct" and tokens[i + 1][1] == "("
+        i + 2 < len(tokens)
+        and tokens[i + 1][0] == "punct"
+        and tokens[i + 1][1] == "("
+        and tokens[i + 2][0] in ("string", "template")
     ):
         return _format_match(tokens[i + 2], should_ignore_url, warnings)
     # or we keep going till we see from
