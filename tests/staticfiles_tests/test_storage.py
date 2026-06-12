@@ -1430,6 +1430,34 @@ class TestCollectionJSModuleImportAggregationManifestStorageLexer(
         )
 
 
+@override_settings(
+    STORAGES={
+        **settings.STORAGES,
+        STATICFILES_STORAGE_ALIAS: {
+            "BACKEND": "staticfiles_tests.storage.CSSLexerStorage",
+        },
+    },
+    STATICFILES_DIRS=settings.STATICFILES_DIRS
+    + [os.path.join(TEST_ROOT, "project", "lexer_css_only")],
+)
+class TestCSSLexerOnlyPatterns(CollectionTestCase):
+    hashed_file_path = hashed_file_path
+
+    def test_lexer_only_leading_comment(self):
+        relpath = self.hashed_file_path("lexer_only.css")
+        with storage.staticfiles_storage.open(relpath) as f:
+            content = f.read()
+        self.assertIn(
+            b"url(img/relative.acae32e4532b.png) center/cover no-repeat",
+            content,
+        )
+        self.assertIn(
+            b"url(img/relative.acae32e4532b.png) center/cover no-repeat",
+            content,
+        )
+        self.assertNotIn(b"/*comment*/", content)
+
+
 class CustomExtractorStorage(EnhancedManifestStaticFilesStorage):
     """Test storage that extracts custom JS_URL() patterns."""
 

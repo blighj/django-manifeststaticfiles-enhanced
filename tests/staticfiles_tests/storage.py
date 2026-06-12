@@ -111,3 +111,7 @@ class JSModuleImportAggregationManifestStorage(EnhancedManifestStaticFilesStorag
 class JSModuleImportAggregationManifestStorageLexer(EnhancedManifestStaticFilesStorage):
     support_js_module_import_aggregation = True
     use_lexer = True
+
+
+class CSSLexerStorage(EnhancedManifestStaticFilesStorage):
+    use_lexer = True
