@@ -42,6 +42,19 @@ _js_ignored_re = _lazy_re_compile(
 )
 
 
+def _strip_ignored_res(patterns):
+    return tuple(
+        (
+            extension,
+            tuple(
+                tuple(pattern[:2]) if isinstance(pattern, (tuple, list)) else pattern
+                for pattern in extension_patterns
+            ),
+        )
+        for extension, extension_patterns in patterns
+    )
+
+
 def _line_at_position(content, position):
     start = content.rfind("\n", 0, position) + 1
     end = content.find("\n", position)
@@ -226,22 +239,39 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
     ignore_errors = []
 
     def __init__(self, *args, **kwargs):
+        if django.VERSION >= (6, 1):
+            super().__init__(*args, **kwargs)
+            return
+        # Django < 6.1 can't unpack (pattern, template, ignored_re) entries,
+        # so give it two-item patterns and rebuild self._patterns with the
+        # ignored_res afterwards, mirroring Django 6.1's compilation.
+        raw_patterns = self.patterns
+        raw_aggregation = self._js_module_import_aggregation_patterns
+        self.patterns = _strip_ignored_res(raw_patterns)
+        self._js_module_import_aggregation_patterns = _strip_ignored_res(
+            (raw_aggregation,)
+        )[0]
         super().__init__(*args, **kwargs)
-        # Django's HashedFilesMixin.__init__ builds self._patterns as 2-tuples.
-        # Rebuild as 3-tuples (compiled, template, ignored_re) so each pattern
-        # carries its own ignore regex and call sites don't branch on file extension.
-        # JS patterns get _js_ignored_re; everything else gets _css_ignored_re.
-        self._patterns = {
-            extension: [
-                (
-                    compiled,
-                    template,
-                    _js_ignored_re if extension == "*.js" else _css_ignored_re,
+        if self.support_js_module_import_aggregation:
+            raw_patterns += (raw_aggregation,)
+        self.patterns = raw_patterns
+        self._js_module_import_aggregation_patterns = raw_aggregation
+        self._patterns = {}
+        for extension, patterns in raw_patterns:
+            for pattern in patterns:
+                if isinstance(pattern, (tuple, list)):
+                    if len(pattern) == 3:
+                        pattern, template, ignored_re = pattern
+                    else:
+                        pattern, template = pattern
+                        ignored_re = _css_ignored_re
+                else:
+                    template = self.default_template
+                    ignored_re = _css_ignored_re
+                compiled = re.compile(pattern, re.IGNORECASE)
+                self._patterns.setdefault(extension, []).append(
+                    (compiled, template, ignored_re)
                 )
-                for compiled, template in compiled_patterns
-            ]
-            for extension, compiled_patterns in self._patterns.items()
-        }
 
     # Override Django's base patterns to fix greedy .* in source map patterns.
     # The greedy .* captures trailing whitespace (tabs, spaces) into the url
@@ -273,6 +303,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                 (
                     r"(?m)^(?P<matched>//# (?-i:sourceMappingURL)=(?P<url>.*?)\s*)$",
                     "//# sourceMappingURL=%(url)s",
+                    _js_ignored_re,
                 ),
             ),
         ),
@@ -296,6 +327,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                     r"""(?P<attributes>(?:[ \t]*with\s*\{[^}]*\})?))"""
                 ),
                 """import%(import)s from "%(url)s"%(attributes)s""",
+                _js_ignored_re,
             ),
             (
                 (
@@ -305,6 +337,7 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                     r"""(?P<attributes>(?:[ \t]*with\s*\{[^}]*\})?))"""
                 ),
                 """export%(exports)s from "%(url)s"%(attributes)s""",
+                _js_ignored_re,
             ),
             (
                 (
@@ -313,11 +346,13 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                     r"""(?P<url>[./].*?)["'])"""
                 ),
                 """import"%(url)s\"""",
+                _js_ignored_re,
             ),
             (
                 _JS_DYNAMIC_IMPORT_GUARD + r"""(?P<matched>import\(["']"""
                 r"""(?P<url>[./][^"']*?)["'](?P<options>[^)]*)\))""",
                 """import("%(url)s"%(options)s)""",
+                _js_ignored_re,
             ),
         ),
     )
