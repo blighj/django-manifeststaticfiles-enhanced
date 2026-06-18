@@ -323,20 +323,18 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
                     _JS_MODULE_STATEMENT_GUARD + r"[ \t]*"
                     r"""(?P<matched>(?-i:import)"""
                     r"""(?P<import>[\s\{][^;]*?|\*\s*as\s*\w+)"""
-                    r"""\s*from\s*['"](?P<url>[./].*?)["']"""
-                    r"""(?P<attributes>(?:[ \t]*with\s*\{[^}]*\})?))"""
+                    r"""\s*from\s*['"](?P<url>[./].*?)["'])"""
                 ),
-                """import%(import)s from "%(url)s"%(attributes)s""",
+                """import%(import)s from "%(url)s\"""",
                 _js_ignored_re,
             ),
             (
                 (
                     _JS_MODULE_STATEMENT_GUARD + r"[ \t]*"
                     r"""(?P<matched>(?-i:export)(?P<exports>[\s\{][^;]*?)"""
-                    r"""\s*from\s*["'](?P<url>[./].*?)["']"""
-                    r"""(?P<attributes>(?:[ \t]*with\s*\{[^}]*\})?))"""
+                    r"""\s*from\s*["'](?P<url>[./].*?)["'])"""
                 ),
-                """export%(exports)s from "%(url)s"%(attributes)s""",
+                """export%(exports)s from "%(url)s\"""",
                 _js_ignored_re,
             ),
             (
