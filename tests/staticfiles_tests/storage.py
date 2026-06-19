@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 from django.conf import settings
@@ -115,3 +116,29 @@ class JSModuleImportAggregationManifestStorageLexer(EnhancedManifestStaticFilesS
 
 class CSSLexerStorage(EnhancedManifestStaticFilesStorage):
     use_lexer = True
+
+
+def always_prehashed(name):
+    """Module-level callable used to exercise the dotted-path `prehashed` option."""
+    return True
+
+
+# Matches bundler-style content-hashed names such as "app.0abcdef0.js".
+_PREHASHED_RE = re.compile(r"\.[0-9a-f]{8}\.[a-z0-9]+$")
+
+
+class PrehashedStorage(EnhancedManifestStaticFilesStorage):
+    """
+    Treat files under dist/ that already carry a bundler-style content hash as
+    pre-hashed, so they are passed through untouched.
+    """
+
+    support_js_module_import_aggregation = True
+
+    def is_prehashed(self, name):
+        name = name.replace(os.sep, "/")
+        return name.startswith("dist/") and bool(_PREHASHED_RE.search(name))
+
+
+class PrehashedNoKeepStorage(PrehashedStorage):
+    keep_original_files = False

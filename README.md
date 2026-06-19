@@ -152,6 +152,69 @@ Also available:
  - manifest_name: change the name of the staticfiles.json file
 
 
+#### Skip files already hashed by a bundler (`prehashed`)
+
+JS bundlers (Vite, webpack, rollup, esbuild, etc) add their own cache busting
+filenames, e.g. `dist/assets/app.4889e940.js`. When those land
+in your static dir, `collectstatic` would hash them again
+(`app.4889e940.a1b2c3d4.js`). Worse still, with `keep_original_files=False`
+it can delete the chunked files the bundler actually references in production.
+
+This option allows you to skip processing of those files and add them to the
+manifest as their own name. It's up to you to provide a callable
+(or a `"dotted.path.to_callable"`) that receives a file name and returns `True`
+when that file already has a cache busting filename:
+
+```python
+# settings.py
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "django_manifeststaticfiles_enhanced.storage.EnhancedManifestStaticFilesStorage",
+        "OPTIONS": {
+            "prehashed": "myapp.staticfiles.is_vite_output",
+        },
+    },
+}
+```
+
+A callable might just match a naming convention:
+
+```python
+# myapp/staticfiles.py
+import re
+
+_BUNDLER_HASH = re.compile(r"\.[0-9a-f]{8,}\.[a-z0-9]+$")
+
+def is_vite_output(name):
+    return name.startswith("dist/") and bool(_BUNDLER_HASH.search(name))
+```
+
+For a definitive answer, you could read the bundler's own output manifest.
+The callable below reads Vite's `manifest.json` to get a definitive answer.
+It uses the cached set as the callable will be used for each static file.
+
+```python
+# myapp/staticfiles.py
+import json
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
+def _vite_outputs():
+    # Vite's manifest lists every emitted file under "file"/"css"/"assets".
+    with open("frontend/dist/.vite/manifest.json") as f:
+        manifest = json.load(f)
+    outputs = set()
+    for entry in manifest.values():
+        if "file" in entry:
+            outputs.add("dist/" + entry["file"])
+        outputs.update("dist/" + p for p in entry.get("css", []))
+        outputs.update("dist/" + p for p in entry.get("assets", []))
+    return outputs
+
+def is_vite_output(name):
+    return name.replace("\\", "/") in _vite_outputs()
+```
+
 ### --parallel command line option
 By default the copying of files to the static folder uses 10 threads, this should be optimal for most projects but you can supply the --parallel option to add more workers if you have lots of files and fast io, or less workers if you have few files and slow io (NAS). Set --parallel to 1 to disable parallel collection.
 
@@ -287,6 +350,10 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the BSD 3-Clause License - the same license as Django.
 
 ## Changelog
+
+### 0.10.0
+
+ - Option to ignore processing of JS bundlers like Vite, webpack, etc.
 
 ### 0.9.0
 

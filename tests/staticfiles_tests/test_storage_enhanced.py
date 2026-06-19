@@ -69,6 +69,33 @@ class EnhancedManifestStaticFilesStorageTest(TestCase):
             storage = EnhancedManifestStaticFilesStorage(keep_original_files=False)
             self.assertFalse(storage.keep_original_files)
 
+    def test_prehashed_default_false(self):
+        """By default no file is treated as pre-hashed."""
+        self.assertIsNone(self.storage.prehashed)
+        self.assertFalse(self.storage.is_prehashed("dist/app.0abcdef0.js"))
+
+    def test_prehashed_callable_option(self):
+        """A callable `prehashed` option drives is_prehashed."""
+        storage = EnhancedManifestStaticFilesStorage(
+            prehashed=lambda name: name.endswith(".min.js")
+        )
+        self.assertTrue(storage.is_prehashed("vendor.min.js"))
+        self.assertFalse(storage.is_prehashed("vendor.js"))
+
+    def test_prehashed_dotted_path_option(self):
+        """A dotted-path string `prehashed` option is resolved to a callable."""
+        storage = EnhancedManifestStaticFilesStorage(
+            prehashed="staticfiles_tests.storage.always_prehashed"
+        )
+        self.assertTrue(storage.is_prehashed("anything.js"))
+
+    def test_prehashed_invalid_option(self):
+        """A non-callable, non-string `prehashed` option is rejected."""
+        from django.core.exceptions import ImproperlyConfigured
+
+        with self.assertRaises(ImproperlyConfigured):
+            EnhancedManifestStaticFilesStorage(prehashed=123)
+
     def test_file_hash(self):
         """Test file hashing functionality"""
         content = ContentFile(b"test content")
