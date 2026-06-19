@@ -237,6 +237,8 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
     use_lexer = False
     sourcemap_strict = False
     ignore_errors = []
+    prehashed = None
+    _prehashed = frozenset()
 
     def __init__(self, *args, **kwargs):
         if django.VERSION >= (6, 1):
@@ -388,6 +390,34 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             if pos < start:
                 return False
         return False
+
+    def _prehashed_checker(self):
+        """Resolve and memoize the ``prehashed`` callable (or ``None``)."""
+        if "_prehashed_checker_cache" not in self.__dict__:
+            checker = self.prehashed
+            if isinstance(checker, str):
+                from django.utils.module_loading import import_string
+
+                checker = import_string(checker)
+            if checker is not None and not callable(checker):
+                raise ImproperlyConfigured(
+                    "prehashed must be a callable or a dotted path to one"
+                )
+            self.__dict__["_prehashed_checker_cache"] = checker
+        return self.__dict__["_prehashed_checker_cache"]
+
+    def is_prehashed(self, name):
+        """
+        Return True if ``name`` already carries a content hash from a build tool
+        and must be passed through untouched: not re-hashed, its internal
+        references not rewritten, and registered in the manifest under its own
+        (unchanged) name.
+
+        The default implementation consults the configured ``prehashed``
+        callable.
+        """
+        checker = self._prehashed_checker()
+        return False if checker is None else bool(checker(name))
 
     def url(self, name, force=False):
         if settings.DEBUG and not force:
@@ -587,8 +617,12 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
         list of file names that need substituting along with the position in
         the file.
         """
+        self._prehashed = frozenset(n for n in paths if self.is_prehashed(n))
+
         substitutions_dict = {}
         for name in paths:
+            if name in self._prehashed:
+                continue
             finders = self._get_url_finders(name)
             if not finders:
                 continue
@@ -895,7 +929,12 @@ class EnhancedHashedFilesMixin(DebugValidationMixin, HashedFilesMixin):
             if hasattr(original_file, "seek"):
                 original_file.seek(0)
 
-            hashed_name = self.hashed_name(name, original_file)
+            if name in self._prehashed:
+                # Already content-addressed by a build tool: keep its own name
+                # instead of appending a second hash.
+                hashed_name = self.clean_name(name)
+            else:
+                hashed_name = self.hashed_name(name, original_file)
             hashed_file_exists = self.exists(hashed_name)
             processed = False
 
@@ -1195,6 +1234,7 @@ class EnhancedManifestStaticFilesStorage(
         ignore_errors=None,
         use_lexer=None,
         sourcemap_strict=None,
+        prehashed=None,
         *args,
         **kwargs,
     ):
@@ -1217,6 +1257,12 @@ class EnhancedManifestStaticFilesStorage(
             self.use_lexer = use_lexer
         if sourcemap_strict is not None:
             self.sourcemap_strict = sourcemap_strict
+        if prehashed is not None:
+            if not (callable(prehashed) or isinstance(prehashed, str)):
+                raise ImproperlyConfigured(
+                    "prehashed must be a callable or a dotted path to one"
+                )
+            self.prehashed = prehashed
         super().__init__(location, base_url, *args, **kwargs)
 
 

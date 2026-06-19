@@ -2162,3 +2162,102 @@ class TestTestingManifestStaticFilesStorage(CollectionTestCase):
         self.assertStaticRaises(
             ValueError, "does/not/exist.png", "/static/does/not/exist.png"
         )
+
+
+class _PrehashedTestMixin:
+    """
+    Builds a bundler-style dist/ tree and collects it. The storage backend
+    (set by the concrete subclass) treats files with a bundler hash as
+    pre-hashed and passes them through untouched.
+
+      dist/app.0abcdef0.js     -> pre-hashed, imports the pre-hashed chunk
+      dist/chunk.1234abcd.js    -> pre-hashed
+      dist/loader.js            -> NOT pre-hashed, imports the pre-hashed entry
+    """
+
+    run_collectstatic_in_setUp = False
+
+    def setUp(self):
+        super().setUp()
+        self.dist_root = tempfile.mkdtemp()
+        dist = os.path.join(self.dist_root, "dist")
+        os.makedirs(dist)
+        with open(os.path.join(dist, "chunk.1234abcd.js"), "w") as f:
+            f.write("export const greeting = 'hi';\n")
+        with open(os.path.join(dist, "app.0abcdef0.js"), "w") as f:
+            f.write(
+                "import { greeting } from './chunk.1234abcd.js';\n"
+                "console.log(greeting);\n"
+            )
+        with open(os.path.join(dist, "loader.js"), "w") as f:
+            f.write("import './app.0abcdef0.js';\n")
+        patched_settings = self.settings(
+            STATICFILES_DIRS=settings.STATICFILES_DIRS + [self.dist_root],
+        )
+        patched_settings.enable()
+        self.addCleanup(patched_settings.disable)
+        self.addCleanup(shutil.rmtree, self.dist_root)
+        self.run_collectstatic()
+
+    def test_prehashed_files_keep_their_name(self):
+        hashed_files = storage.staticfiles_storage.hashed_files
+        self.assertEqual(hashed_files["dist/app.0abcdef0.js"], "dist/app.0abcdef0.js")
+        self.assertEqual(
+            hashed_files["dist/chunk.1234abcd.js"], "dist/chunk.1234abcd.js"
+        )
+
+    def test_prehashed_internal_reference_untouched(self):
+        # The import inside the pre-hashed entry is left byte-for-byte as-is.
+        content = self._get_file(os.path.join("dist", "app.0abcdef0.js"))
+        self.assertIn("from './chunk.1234abcd.js'", content)
+
+    def test_prehashed_files_present_at_own_name(self):
+        for name in ("dist/app.0abcdef0.js", "dist/chunk.1234abcd.js"):
+            self.assertTrue(
+                os.path.exists(os.path.join(settings.STATIC_ROOT, name)),
+                "%s missing from STATIC_ROOT" % name,
+            )
+
+    def test_prehashed_files_not_double_hashed(self):
+        # No second hash was appended to the bundler's name.
+        dist = os.path.join(settings.STATIC_ROOT, "dist")
+        names = os.listdir(dist)
+        self.assertFalse(
+            [n for n in names if re.match(r"app\.0abcdef0\..+\.js$", n)],
+            "found a double-hashed copy of the pre-hashed file",
+        )
+
+    def test_reference_to_prehashed_resolves_to_own_name(self):
+        # loader.js is NOT pre-hashed, so it is processed and its import of the
+        # pre-hashed entry must resolve to the entry's own (unchanged) name.
+        hashed_files = storage.staticfiles_storage.hashed_files
+        loader_hashed = hashed_files["dist/loader.js"]
+        self.assertNotEqual(loader_hashed, "dist/loader.js")
+        content = self._get_file(loader_hashed)
+        self.assertIn("./app.0abcdef0.js", content)
+
+
+@override_settings(
+    STORAGES={
+        **settings.STORAGES,
+        STATICFILES_STORAGE_ALIAS: {
+            "BACKEND": "staticfiles_tests.storage.PrehashedStorage",
+        },
+    }
+)
+class TestCollectionPrehashedStorage(_PrehashedTestMixin, CollectionTestCase):
+    pass
+
+
+@override_settings(
+    STORAGES={
+        **settings.STORAGES,
+        STATICFILES_STORAGE_ALIAS: {
+            "BACKEND": "staticfiles_tests.storage.PrehashedNoKeepStorage",
+        },
+    }
+)
+class TestCollectionPrehashedNoKeepStorage(_PrehashedTestMixin, CollectionTestCase):
+    """Same behaviour must hold with keep_original_files=False."""
+
+    pass
