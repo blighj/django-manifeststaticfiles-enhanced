@@ -18,6 +18,8 @@ This package includes several improvements to Django's `ManifestStaticFilesStora
 - **[ticket_23517](https://code.djangoproject.com/ticket/23517)**: Collect static files in parallel
 - **[ticket_36968](https://code.djangoproject.com/ticket/36968)**: Provide better error messages when collectstatic fails
 - **[new_feature 127](https://github.com/django/new-features/issues/127)**: Configurable using the OPTIONS dict of STORAGES setting
+- **[new_feature 173](https://github.com/django/new-features/issues/173)**: Warn instead of error for missing sourcemap files during collectstatic
+
 ## Compatibility
 
 - **Django**: 4.2, 5.0, 5.1, 5.2, 6.0
